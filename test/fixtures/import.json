@@ -1,0 +1,7 @@
+{
+  "format": "baankhao-ledger",
+  "version": 1,
+  "transactions": [
+    { "id": "fixture-import-0001", "type": "income", "amount": 12345, "date": "2026-09-15", "category": "ทดสอบนำเข้า", "note": "ข้อมูลทดสอบการกู้คืน" }
+  ]
+}

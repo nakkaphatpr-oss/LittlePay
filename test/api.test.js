@@ -37,3 +37,16 @@ test('bad writes rejected before proxy; Sheets conflicts and HTML errors mapped 
   const bad = createHandler({ env, verify, request: async () => ({ ok: true, json: async () => { throw new Error('HTML login page'); } }) });
   assert.equal((await invoke(bad)).status, 502);
 });
+
+test('identical in-flight requests share one Sheets call after verifying both callers', async () => {
+  let calls = 0, verified = 0, resolve;
+  const gate = new Promise(done => { resolve = done; });
+  const handler = createHandler({ env, log: () => {}, verify: async () => { verified++; return { getPayload: () => identity }; }, request: async () => {
+    calls++; await gate; return { ok: true, json: async () => ({ ok: true, transactions: [], revision: 2 }) };
+  } });
+  const a = invoke(handler), b = invoke(handler);
+  await new Promise(done => setImmediate(done)); resolve();
+  const results = await Promise.all([a, b]);
+  assert.equal(calls, 1); assert.equal(verified, 2); assert.ok(results.every(result => result.status === 200));
+  await invoke(handler); assert.equal(calls, 2); // Explicit refresh must not return a cached stale ledger.
+});

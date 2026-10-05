@@ -1,4 +1,5 @@
 import { installFeatures } from './features.js';
+import { pendingStore, commandWasRejected } from './pending.js';
 import { normalizeLedger, defaultSettings, applyLedger, parseFullBackup, CATEGORIES, moneyToSatang, validateTransaction, validateCommand, applyCommand, summarize, filterTransactions, parseBackup, toCSV } from './core.js';
 
 const $ = selector => document.querySelector(selector);
@@ -8,12 +9,30 @@ const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok',
 const DEMO_KEY = 'baankhao-demo-v1';
 let state = normalizeLedger(), mode = null, token = null, config, busy = false, pending = null, editing = null, page = 1, view = 'overview', toastTimer;
 let googleReady, templateDraft = null;
+let slowTimer;
+const pendingCommands = pendingStore({ getItem: key => sessionStorage.getItem(key), setItem: (key, value) => sessionStorage.setItem(key, value), removeItem: key => sessionStorage.removeItem(key) });
+try { pending = pendingCommands.load(); } catch { /* Leave an unreadable stored command untouched. */ }
+function clearPending() { pending = null; try { pendingCommands.clear(); } catch {} $('#pending-banner').hidden = true; }
 const features = installFeatures({getState:()=>({...state,cloud:mode==='cloud'}),getMonth:()=>$('#month').value,today,money,mutate,toast,confirmAction,openTemplate,download});
 const viewLabels = { planning: ['วางแผนและบัญชี', 'จัดการเงินแต่ละกระเป๋า งบประมาณ และรายการที่ใช้บ่อย'], overview: ['ภาพรวมการเงิน', 'รู้ที่มา เห็นที่ไป วางแผนเดือนถัดไปได้ดีขึ้น'], transactions: ['รายการทั้งหมด', 'ทุกรายรับ ทุกรายจ่าย อยู่ในที่เดียว'], reports: ['สรุปตามหมวดหมู่', 'มองเห็นรูปแบบการใช้เงินของคุณ'], settings: ['ข้อมูลและการตั้งค่า', 'จัดการสมุดบัญชีและเก็บข้อมูลไว้กับคุณ'] };
 $('#month').value = today().slice(0, 7);
 function el(tag, text, className) { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; }
 function toast(message, error = false) { clearTimeout(toastTimer); $('#toast').textContent = message; $('#toast').className = 'toast' + (error ? ' error' : ''); $('#toast').hidden = false; toastTimer = setTimeout(() => { $('#toast').hidden = true; }, error ? 10000 : 4500); }
-function setBusy(value) { busy = value; if(value)$('#sync-time').textContent='กำลังติดต่อ…'; for (const id of ['add', 'refresh', 'save', 'retry', 'import-json', 'logout', 'connect-real', 'demo-start']) $('#' + id).disabled = value; document.querySelectorAll('[data-edit],[data-delete],[data-template]').forEach(button => { button.disabled = value; }); $('#save').textContent = value ? 'กำลังบันทึก…' : 'บันทึกรายการ'; }
+function setBusy(value) {
+  busy = value; clearTimeout(slowTimer);
+  if (value) {
+    $('#sync-time').textContent = pending ? 'กำลังบันทึกไป Google Sheets…' : 'กำลังโหลดข้อมูล…';
+    $('#form-status').textContent = pending ? 'กำลังบันทึก กรุณารอผลยืนยัน ไม่ต้องกดซ้ำ' : '';
+    slowTimer = setTimeout(() => {
+      const message = pending ? 'Google ตอบช้ากว่าปกติ กำลังรอผลและลองคำสั่งเดิมอย่างปลอดภัย…' : 'Google ตอบช้ากว่าปกติ กำลังรอข้อมูล…';
+      $('#sync-time').textContent = message; $('#form-status').textContent = message;
+    }, 7000);
+  } else $('#form-status').textContent = '';
+  for (const id of ['add', 'refresh', 'save', 'retry', 'import-json', 'logout', 'connect-real', 'demo-start']) $('#' + id).disabled = value;
+  document.querySelectorAll('[data-edit],[data-delete],[data-template]').forEach(button => { button.disabled = value; });
+  $('#transaction-form').querySelectorAll('input,select,textarea').forEach(input => { input.disabled = value || Boolean(pending); });
+  $('#save').textContent = value ? 'กำลังบันทึก…' : pending ? 'ลองบันทึกคำสั่งเดิม' : 'บันทึกรายการ';
+}
 function confirmAction(title, message) { return new Promise(resolve => {
   $('#confirm-title').textContent = title; $('#confirm-message').textContent = message;
   const dialog = $('#confirmation');
@@ -37,7 +56,7 @@ async function api(command) {
   try { response = await fetch('/api/ledger', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({...command,clientVersion:2}), signal: AbortSignal.timeout(55000) }); }
   catch { throw new Error('เครือข่ายขัดข้อง ยังยืนยันผลการบันทึกไม่ได้ กรุณาลองใหม่'); }
   let body; try { body = await response.json(); } catch { throw new Error('เซิร์ฟเวอร์ตอบกลับไม่สมบูรณ์ กรุณาลองใหม่'); }
-  if (!response.ok) { const error = new Error(body.error || 'เชื่อมต่อไม่สำเร็จ'); error.status = response.status; throw error; }
+  if (!response.ok) { const error = new Error(body.error || 'เชื่อมต่อไม่สำเร็จ'); error.status = response.status; error.code = body.code; error.outcomeUnknown = body.outcomeUnknown; throw error; }
   if (!Array.isArray(body.transactions) || !Number.isSafeInteger(body.revision)) throw new Error('รูปแบบข้อมูลจากเซิร์ฟเวอร์ไม่ถูกต้อง');
   return normalizeLedger(body);
 }
@@ -45,12 +64,14 @@ function showWorkspace() { $('#welcome').hidden = true; $('#workspace').hidden =
 function synced() { $('#sync-time').textContent = 'บันทึก/โหลดสำเร็จ ' + new Intl.DateTimeFormat('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' }).format(new Date()); }
 async function refresh() {
   if (busy) return;
+  // Replaying the same operation both checks its result and returns the latest ledger.
+  if (pending) { if (await mutate(null, true)) { $('#editor').close(); toast('ยืนยันการบันทึกแล้ว'); } return; }
   setBusy(true);
   try {
     if (mode === 'demo') { const stored = localStorage.getItem(DEMO_KEY); if (stored) { const data = JSON.parse(stored); state = normalizeLedger(data); } }
     else state = await api({ action: 'read' });
-    pending = null; $('#pending-banner').hidden = true; synced(); render(); toast('อัปเดตข้อมูลแล้ว');
-  } catch (error) { toast(error.message, true); if (error.status === 401) await returnToLogin(); }
+    synced(); render(); toast('อัปเดตข้อมูลแล้ว');
+  } catch (error) { $('#sync-time').textContent = 'โหลดไม่สำเร็จ · ยังแสดงข้อมูลล่าสุดที่โหลดได้'; toast(error.message, true); if (error.status === 401) await returnToLogin(); }
   finally { setBusy(false); }
 }
 async function transmit(command) {
@@ -67,11 +88,15 @@ async function mutate(data, retry = false) {
   if (busy) return false;
   if (pending && !retry) { toast('กรุณาลองบันทึกคำสั่งที่ค้างอยู่ หรือรีเฟรชเพื่อตรวจสอบข้อมูลก่อน', true); return false; }
   const command = retry ? pending : validateCommand({ ...data, operationId: crypto.randomUUID(), baseRevision: state.revision });
-  setBusy(true); pending = command;
+  if (mode === 'cloud') {
+    try { pendingCommands.save(command); }
+    catch { toast('เก็บคำสั่งรอบนี้ในแท็บไม่ได้ ยังไม่ได้ส่งข้อมูล กรุณาตรวจพื้นที่จัดเก็บของเบราว์เซอร์', true); return false; }
+  }
+  pending = command; setBusy(true);
   try {
-    state = await transmit(command); pending = null; $('#pending-banner').hidden = true; synced(); render(); return true;
+    state = await transmit(command); clearPending(); synced(); render(); return true;
   } catch (error) {
-    if ([400, 401, 403, 409, 413, 415, 503].includes(error.status) || mode === 'demo') pending = null;
+    if (commandWasRejected(error) || mode === 'demo') clearPending();
     $('#sync-time').textContent = pending ? 'ยังยืนยันการบันทึกไม่ได้' : 'บันทึกไม่สำเร็จ';
     $('#pending-banner').hidden = !pending; $('#form-error').textContent = error.message; toast(error.message, true);
     if (error.status === 401) { $('#editor').close(); await returnToLogin(); }
@@ -191,7 +216,7 @@ async function initGoogle() {
     await googleReady;
     window.google.accounts.id.initialize({ client_id: config.clientId, auto_select: false, callback: async response => {
       if (busy) return; setBusy(true); token = response.credential;
-      try { state = await api({ action: 'read' }); mode = 'cloud'; pending = null; $('#pending-banner').hidden = true; synced(); showWorkspace(); }
+      try { state = await api({ action: 'read' }); mode = 'cloud'; $('#pending-banner').hidden = !pending; synced(); showWorkspace(); if (pending) { $('#sync-time').textContent = 'มีคำสั่งเดิมรอยืนยันผล'; toast('พบคำสั่งเดิมที่ยังไม่ทราบผล กด “ตรวจผล / ลองคำสั่งเดิม” เพื่อยืนยันโดยไม่สร้างซ้ำ'); } }
       catch (error) { token = null; toast(error.message, true); }
       finally { setBusy(false); }
     } });
@@ -199,11 +224,12 @@ async function initGoogle() {
   } catch (error) { googleReady = null; $('#setup-message').textContent = error.message; }
 }
 $('#demo-start').onclick = () => {
+  if (pending) return toast('มีคำสั่งของบัญชีจริงรอยืนยัน กรุณาเข้าสู่ระบบแล้วตรวจผลคำสั่งเดิมก่อน', true);
   try { const stored = localStorage.getItem(DEMO_KEY); if (stored) { const data = JSON.parse(stored); state = normalizeLedger(data); } else { state = normalizeLedger({transactions:demoSeed()}); localStorage.setItem(DEMO_KEY, JSON.stringify(state)); } mode = 'demo'; pending = null; $('#pending-banner').hidden = true; synced(); showWorkspace(); }
   catch { toast('เปิดข้อมูลทดลองไม่ได้ พื้นที่จัดเก็บของเบราว์เซอร์อาจถูกปิดหรือข้อมูลเสียหาย', true); }
 };
 $('#connect-real').onclick = () => returnToLogin();
-$('#logout').onclick = async () => { if (busy) return; if (pending && !await confirmAction('ออกจากระบบ?', 'ยังมีคำสั่งที่ไม่ทราบผล กรุณาตรวจสอบรายการหลังเข้าสู่ระบบอีกครั้ง')) return; pending = null; window.google?.accounts.id.disableAutoSelect(); await returnToLogin(); };
+$('#logout').onclick = async () => { if (busy) return; if (pending && !await confirmAction('ออกจากระบบ?', 'ยังมีคำสั่งที่ไม่ทราบผล ระบบจะเก็บคำสั่งเดิมในแท็บนี้ไว้ให้ยืนยันหลังเข้าสู่ระบบอีกครั้ง')) return; window.google?.accounts.id.disableAutoSelect(); await returnToLogin(); };
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => setView(button.dataset.view)));
 $('#add').onclick = () => openEditor();
 $('#refresh').onclick = refresh;
@@ -213,9 +239,10 @@ $('#editor').addEventListener('cancel', event => { if (busy) event.preventDefaul
 document.querySelectorAll('input[name="type"]').forEach(input => input.addEventListener('change', () => { $('#category').value = ''; fillCategories(); }));
 $('#transaction-form').onsubmit = async event => {
   event.preventDefault(); $('#form-error').textContent = '';
+  if (busy) return;
+  if (pending) { if (await mutate(null, true)) { $('#editor').close(); toast('ยืนยันการบันทึกแล้ว'); } return; }
   try { const form = new FormData(event.currentTarget); const transaction = validateTransaction({ id: editing || crypto.randomUUID(), type: form.get('type'), amount: moneyToSatang(form.get('amount')), date: form.get('date'), category: form.get('type')==='transfer'?'โอนเงิน':form.get('category'), note: form.get('note'),accountId:form.get('accountId'),...(form.get('type')==='transfer'?{toAccountId:form.get('toAccountId')}:{}),...(editing ? Object.fromEntries(Object.entries(state.transactions.find(t=>t.id===editing)).filter(([k])=>['templateId','occurrence'].includes(k))) : templateDraft||{}) });
     if (await mutate({ action: 'upsert', transaction })) { $('#editor').close(); toast('บันทึกรายการเรียบร้อยแล้ว'); }
-    else if (pending) $('#editor').close();
   } catch (error) { $('#form-error').textContent = error.message; }
 };
 document.addEventListener('click', async event => {

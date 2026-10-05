@@ -1,11 +1,13 @@
 import { OAuth2Client } from 'google-auth-library';
 import { validateCommand } from '../public/core.js';
+import { callSheets } from '../src/sheets-transport.js';
 
 const auth = new OAuth2Client();
 export function configuration(env = process.env) {
   return Boolean(env.GOOGLE_CLIENT_ID && env.ALLOWED_EMAIL && env.APPS_SCRIPT_URL && env.SHEETS_API_SECRET?.length >= 32);
 }
-export function createHandler({ env = process.env, verify = (token, audience) => auth.verifyIdToken({ idToken: token, audience }), request = fetch } = {}) {
+export function createHandler({ env = process.env, verify = (token, audience) => auth.verifyIdToken({ idToken: token, audience }), request = fetch, pause, log } = {}) {
+  const inflight = new Map();
   return async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -27,14 +29,16 @@ export function createHandler({ env = process.env, verify = (token, audience) =>
       const command = body?.action === 'read' ? { action: 'read' } : validateCommand(body);
       if (command.action !== 'read' && body.clientVersion !== 2) return send(409, { error: 'มี LittlePay รุ่นใหม่ กรุณารีโหลดหน้าเว็บก่อนบันทึก เพื่อรักษาข้อมูลบัญชีและหมวดหมู่' });
       if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(env.APPS_SCRIPT_URL)) return send(503, { error: 'ตั้งค่า Apps Script URL ไม่ถูกต้อง' });
-      const response = await request(env.APPS_SCRIPT_URL, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ secret: env.SHEETS_API_SECRET, command }), signal: AbortSignal.timeout(45000), redirect: 'follow'
-      });
-      if (!response.ok) return send(502, { error: 'Google Sheets ไม่พร้อมใช้งาน กรุณาลองใหม่' });
-      let result;
-      try { result = await response.json(); } catch { return send(502, { error: 'Apps Script ตอบกลับไม่ถูกต้อง ตรวจสอบสิทธิ์ Anyone และ deployment /exec' }); }
-      if (!result.ok) return send([400, 409, 429].includes(result.status) ? result.status : 502, { error: result.error || 'เชื่อมต่อ Google Sheets ไม่สำเร็จ' });
+      const key = JSON.stringify(command);
+      // Coalesce simultaneous identical requests in this warm instance; never cache stale ledger data.
+      if (!inflight.has(key)) {
+        const work = callSheets({ url: env.APPS_SCRIPT_URL, body: JSON.stringify({ secret: env.SHEETS_API_SECRET, command }), request, pause, log });
+        inflight.set(key, work);
+        void work.finally(() => { if (inflight.get(key) === work) inflight.delete(key); }).catch(() => {});
+      }
+      const { result, failure, durationMs } = await inflight.get(key);
+      res.setHeader('Server-Timing', `sheets;dur=${durationMs}`);
+      if (failure) { if (failure.retryable) res.setHeader('Retry-After', '3'); return send(failure.status, failure); }
       return send(200, { transactions: result.transactions, revision: result.revision, ...(result.settings ? { settings: result.settings, trash: result.trash, history: result.history } : {}) });
     } catch (error) {
       if (error.status === 400) return send(400, { error: error.message });

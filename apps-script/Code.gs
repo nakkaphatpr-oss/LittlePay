@@ -80,10 +80,12 @@ function summarize(transactions) {
   if (!Number.isSafeInteger(income) || !Number.isSafeInteger(expense)) fail('ยอดรวมมากเกินขอบเขตที่รองรับ');
   return { income, expense, balance: income - expense };
 }
-function filterTransactions(transactions, { month = '', type = '', category = '', search = '' } = {}) {
+function filterTransactions(transactions, { month = '', type = '', category = '', search = '', account = '', from = '', to = '', min = null, max = null } = {}) {
   const query = search.toLocaleLowerCase('th').trim();
   return transactions.slice().reverse().filter(t => (!month || t.date.startsWith(month)) && (!type || t.type === type)
-    && (!category || t.category === category) && (!query || (t.note + ' ' + t.category).toLocaleLowerCase('th').includes(query)))
+    && (!category || t.category === category) && (!account || (t.accountId || 'default-wallet') === account || t.toAccountId === account)
+    && (!from || t.date >= from) && (!to || t.date <= to) && (min === null || t.amount >= min) && (max === null || t.amount <= max)
+    && (!query || (t.note + ' ' + t.category).toLocaleLowerCase('th').includes(query)))
     .sort((a, b) => b.date.localeCompare(a.date));
 }
 function parseBackup(text) {
@@ -136,6 +138,15 @@ function validateSettings(input) {
   });
   if (new Set(templates.map(t=>t.id)).size !== templates.length) fail('รหัสรายการต้นแบบซ้ำ');
   const result = {accounts,categories,budgets,templates};
+  // Keep absent fields absent when replaying old operation IDs.
+  if (input.goals !== undefined) {
+    if (!Array.isArray(input.goals) || input.goals.length > 100) fail('เป้าหมายต้องไม่เกิน 100 รายการ');
+    result.goals = input.goals.map(g => {
+      if (!ID_PATTERN.test(g.id || '') || !Number.isSafeInteger(g.target) || g.target <= 0 || g.target > MAX_AMOUNT || !validDate(g.deadline) || !accounts.some(a=>a.id===g.accountId)) fail('เป้าหมายเงินออมไม่ถูกต้อง');
+      return {id:g.id,name:shortName(g.name),target:g.target,deadline:g.deadline,accountId:g.accountId};
+    });
+    if (new Set(result.goals.map(g=>g.id)).size !== result.goals.length) fail('รหัสเป้าหมายซ้ำ');
+  }
   if (JSON.stringify(result).length > 35000) fail('การตั้งค่ามีขนาดใหญ่เกินไป กรุณาลบรายการต้นแบบหรืองบเก่าที่ไม่ใช้');
   return result;
 }
@@ -177,6 +188,7 @@ function stepLedger(ctx, command, savedAt = '') {
     }
     // A fresh book may adopt the default account's opening balance from the backup.
     if (!records.size && !deleted.size && ctx.revision===0) merged.accounts=command.settings.accounts;
+    if (ctx.settings.goals || command.settings.goals) merged.goals=[...(ctx.settings.goals||[]),...(command.settings.goals||[]).filter(g=>!(ctx.settings.goals||[]).some(x=>x.id===g.id))];
     ctx.settings=validateSettings(merged);
   } else if (command.action === 'renameCategory') {
     const {type,from,to}=command;

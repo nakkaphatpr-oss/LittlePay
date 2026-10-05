@@ -27,7 +27,7 @@ export function createHandler({ env = process.env, verify = (token, audience) =>
       if (typeof body === 'string') { try { body = JSON.parse(body); } catch { return send(400, { error: 'ข้อมูล JSON ไม่ถูกต้อง' }); } }
       if (JSON.stringify(body || {}).length > 60000) return send(413, { error: 'ข้อมูลใหญ่เกินไป' });
       const command = body?.action === 'read' ? { action: 'read' } : validateCommand(body);
-      if (command.action !== 'read' && body.clientVersion !== 2) return send(409, { error: 'มี LittlePay รุ่นใหม่ กรุณารีโหลดหน้าเว็บก่อนบันทึก เพื่อรักษาข้อมูลบัญชีและหมวดหมู่' });
+      if (command.action !== 'read' && body.clientVersion !== 3) return send(409, { error: 'มี LittlePay รุ่นใหม่ กรุณารีโหลดหน้าเว็บก่อนบันทึก เพื่อรักษาข้อมูลบัญชี หมวดหมู่ และเป้าหมายเงินออม' });
       if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(env.APPS_SCRIPT_URL)) return send(503, { error: 'ตั้งค่า Apps Script URL ไม่ถูกต้อง' });
       const key = JSON.stringify(command);
       // Coalesce simultaneous identical requests in this warm instance; never cache stale ledger data.

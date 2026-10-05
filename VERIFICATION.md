@@ -57,3 +57,13 @@
 - Build และ syntax checks ผ่าน ไม่เปลี่ยน Apps Script bundle และไม่มีการเขียนรายการทดสอบในฐานข้อมูลจริง
 - อ่านฐานข้อมูลจริงสำเร็จ revision 23 / 23 รายการ และ secret ผิดถูกปฏิเสธ
 - ไม่พบ runtime error clusters ในช่วงตรวจ แต่ runtime log query เดิมหมดเวลา จึงยังระบุสาเหตุของเหตุการณ์เดิมหรือเปอร์เซ็นต์ความเร็วที่ดีขึ้นไม่ได้
+
+## V3 — 6 ตุลาคม 2026
+
+- ทดสอบ unit/integration รวม 35 กรณี: queue persistence/idempotent retry/rebase safety, storage failure, advanced filters, goals validation/backup/merge และ Apps Script replay ของ goals โดย retry คำสั่ง settings เก่ายังได้
+- Browser demo: สร้างหมวดสัตว์เลี้ยง เปลี่ยนชื่อ กรอก 88 บาทและหมายเหตุ ปิด/รีโหลดแล้วกู้ร่างสำเร็จ บันทึกได้ สร้างเป้าหมายเงินออมและกรอง 80–100 บาททุกเดือนได้ผลตรง (รวม transfer)
+- Test-only server port 3004: commit แล้วตอบ 503 คิวยังอยู่หลัง reload; ส่งซ้ำแล้วมีรายการเดียว จากนั้นหยุด server และ reload ได้จาก service worker เปิดสำเนาในเครื่องและเพิ่มรายการ 32 บาทลงคิวได้
+- ตรวจฟอร์มบน viewport 390×844: ปุ่มเพิ่ม/เปลี่ยนชื่อหมวดหมู่และร่างใช้งานได้ ไม่มี console error ใน demo ตรวจคืน viewport แล้ว
+- Apps Script deployment เดิม Version 3 เผยแพร่ 6 ต.ค. 2026 00:41 เวลาไทย URL/secret เดิม ไม่เปลี่ยนสิทธิ์
+- Read-only production check: revision 27 / 26 transactions; invalid secret rejected ไม่เพิ่มรายการทดสอบในฐานข้อมูลจริง
+- ยังไม่ได้ทดสอบ Safari iOS บนอุปกรณ์จริง หรือให้แอปซิงค์หลังปิดแท็บ (ไม่รองรับ background sync)

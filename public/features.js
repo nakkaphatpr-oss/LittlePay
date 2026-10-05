@@ -34,11 +34,19 @@ export function installFeatures({getState,getMonth,today,money,mutate,toast,conf
       {name:'archived',label:'การแสดงผล',value:account?.archived?'yes':'no',options:[['no','แสดงบัญชี'],['yes','ซ่อนจากรายการใหม่']]}
     ],async v=>{const a={id:account?.id||crypto.randomUUID(),name:v.name,opening:signedAmount(v.opening),archived:v.archived==='yes'};return save({...settings(),accounts:account?settings().accounts.map(x=>x.id===a.id?a:x):[...settings().accounts,a]});});
   }
-  function editCategory(category) {
+  function editCategory(category, onSaved, preferredType='expense') {
     form(category?'แก้ไขหมวดหมู่':'เพิ่มหมวดหมู่',[
-      ...(!category?[{name:'type',label:'ประเภท',value:'expense',options:[['expense','รายจ่าย'],['income','รายรับ']]}]:[]),
+      ...(!category?[{name:'type',label:'ประเภท',value:preferredType,options:[['expense','รายจ่าย'],['income','รายรับ']]}]:[]),
       {name:'name',label:'ชื่อหมวดหมู่',value:category?.name}
-    ],async v=>category?mutate({action:'renameCategory',type:category.type,from:category.name,to:v.name}):save({...settings(),categories:[...settings().categories,{type:v.type,name:v.name,hidden:false}]}));
+    ],async v=>{const ok=await (category?mutate({action:'renameCategory',type:category.type,from:category.name,to:v.name}):save({...settings(),categories:[...settings().categories,{type:v.type,name:v.name,hidden:false}]}));if(ok)onSaved?.(v.name.trim(),category?.type||v.type);return ok;});
+  }
+  function editGoal(goal) {
+    form(goal?'แก้ไขเป้าหมายเงินออม':'เพิ่มเป้าหมายเงินออม',[
+      {name:'name',label:'ชื่อเป้าหมาย',value:goal?.name},
+      {name:'target',label:'เงินเป้าหมาย (บาท)',value:goal?(goal.target/100).toFixed(2):''},
+      {name:'deadline',label:'วันที่ตั้งใจให้ถึงเป้าหมาย',type:'date',min:'1900-01-01',max:'2199-12-31',value:goal?.deadline||today()},
+      {name:'accountId',label:'บัญชีสำหรับติดตามเงินออม',value:goal?.accountId||'default-wallet',options:accountsOptions(),hint:'ใช้ยอดคงเหลือของบัญชีนี้เป็นความคืบหน้า ไม่ได้กันเงินหรือโอนเงินจริง ถ้าใช้บัญชีเดียวหลายเป้าหมาย ยอดเดียวกันจะปรากฏในแต่ละเป้าหมาย'}
+    ],v=>{const g={id:goal?.id||crypto.randomUUID(),name:v.name,target:moneyToSatang(v.target),deadline:v.deadline,accountId:v.accountId};return save({...settings(),goals:goal?(settings().goals||[]).map(x=>x.id===g.id?g:x):[...(settings().goals||[]),g]});});
   }
   function editBudget(budget) {
     const categories=[...new Set([...settings().categories.filter(c=>c.type==='expense').map(c=>c.name),...getState().transactions.filter(t=>t.type==='expense').map(t=>t.category)])];
@@ -72,6 +80,12 @@ export function installFeatures({getState,getMonth,today,money,mutate,toast,conf
     const wallet=panel(planning,'บัญชีเงินของฉัน','ยอดตั้งต้น + รายการทั้งหมด · การโอนไม่เพิ่มรายรับหรือรายจ่าย');wallet.append(button('＋ เพิ่มบัญชี',()=>editAccount()));
     const balances=accountBalances(s);
     for(const a of cfg.accounts) row(wallet,a.name+(a.archived?' · ซ่อน':''),money(balances.get(a.id)),[button('แก้ไข',()=>editAccount(a))]);
+    const goals=panel(planning,'เป้าหมายเงินออม','ติดตามจากยอดบัญชีที่เลือก · รายการรอส่งยังไม่รวมในยอด');goals.append(button('＋ เพิ่มเป้าหมาย',()=>editGoal()));
+    for(const g of cfg.goals||[]) {
+      const saved=Math.max(0,balances.get(g.accountId)||0),percent=Math.min(100,Math.floor(saved/g.target*100));
+      const r=row(goals,g.name,money(saved)+' / '+money(g.target)+' · '+percent+'% · เป้าหมาย '+g.deadline+(saved>=g.target?' · ถึงเป้าหมายแล้ว':g.deadline<today()?' · เลยวันที่ตั้งไว้':' · เหลือ '+money(g.target-saved)),[button('แก้ไข',()=>editGoal(g)),button('ลบเป้าหมาย',async()=>{if(await confirmAction('ลบเป้าหมาย?',g.name+' — ยอดเงินและรายการยังอยู่'))await save({...settings(),goals:(settings().goals||[]).filter(x=>x.id!==g.id)});})]);
+      const meter=node('meter');meter.min=0;meter.max=g.target;meter.value=Math.min(saved,g.target);meter.setAttribute('aria-label',g.name+' '+percent+'%');r.append(meter);
+    }
     const budget=panel(planning,'งบประมาณ · '+month,'งบรวมกับงบรายหมวดใช้เปรียบเทียบแยกกัน ไม่ได้นำมารวมซ้ำ');budget.append(button('＋ ตั้งงบ',()=>editBudget()));
     const monthly=s.transactions.filter(t=>t.type==='expense'&&t.date.startsWith(month));
     for(const b of cfg.budgets.filter(b=>b.month===month)) {
@@ -103,5 +117,5 @@ export function installFeatures({getState,getMonth,today,money,mutate,toast,conf
     $('#backup-reminder').textContent=last?'ครบ 7 วันจากการกดสำรองครั้งล่าสุด แนะนำให้สำรอง JSON อีกครั้ง':'ยังไม่มีประวัติการกดสำรองบนอุปกรณ์นี้ แนะนำให้สำรอง JSON เป็นระยะ';
   }
   document.addEventListener('click',e=>{const target=e.target.closest('[data-template]');if(target){const t=getState().transactions.find(x=>x.id===target.dataset.template);if(t)editTemplate(t);}});
-  return {render,editTemplate};
+  return {render,editTemplate,editCategory};
 }

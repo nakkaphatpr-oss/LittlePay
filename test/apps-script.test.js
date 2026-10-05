@@ -51,3 +51,11 @@ test('v2 settings, transfer and trash survive Apps Script replay and retries',()
   const read=f.request({action:'read'});assert.equal(read.revision,3);assert.equal(read.settings.accounts.length,2);assert.equal(read.history[0].before.type,'transfer');
   assert.equal(f.request({action:'restore',id:transfer.id,baseRevision:3,operationId:'restore-001'}).transactions.length,1);
 });
+
+test('goals persist in the Sheet event log without breaking canonical retries of older settings',()=>{
+  const f=fixture(),old={action:'settings',operationId:'settings-old-001',baseRevision:0,settings:defaultSettings()};
+  f.request(old);
+  const settings={...defaultSettings(),goals:[{id:'goal-emergency-001',name:'เงินสำรอง',target:500000,deadline:'2027-01-01',accountId:'default-wallet'}]};
+  assert.equal(f.request({action:'settings',operationId:'settings-new-001',baseRevision:1,settings}).settings.goals[0].target,500000);
+  assert.equal(f.request(old).revision,2);assert.equal(f.request({action:'read'}).settings.goals.length,1);
+});

@@ -20,25 +20,43 @@ export function validDate(value) {
 }
 export function validateTransaction(input) {
   if (!input || typeof input !== 'object' || !ID_PATTERN.test(input.id || '')) fail('รหัสรายการไม่ถูกต้อง');
-  if (!['income', 'expense'].includes(input.type)) fail('ประเภทรายการไม่ถูกต้อง');
+  if (!['income', 'expense', 'transfer'].includes(input.type)) fail('ประเภทรายการไม่ถูกต้อง');
   if (!Number.isSafeInteger(input.amount) || input.amount <= 0 || input.amount > MAX_AMOUNT) fail('จำนวนเงินไม่ถูกต้อง');
   if (!validDate(input.date)) fail('วันที่ไม่ถูกต้อง');
   if (typeof input.category !== 'string' || !input.category.trim() || input.category.trim().length > 60) fail('หมวดหมู่ต้องมีความยาว 1–60 ตัวอักษร');
   if (typeof input.note !== 'string' || input.note.length > 300) fail('หมายเหตุต้องไม่เกิน 300 ตัวอักษร');
-  return { id: input.id, type: input.type, amount: input.amount, date: input.date, category: input.category.trim(), note: input.note.trim() };
+  const result = { id: input.id, type: input.type, amount: input.amount, date: input.date, category: input.category.trim(), note: input.note.trim() };
+  for (const key of ['accountId', 'toAccountId', 'templateId']) if (input[key] !== undefined) {
+    if (!ID_PATTERN.test(input[key])) fail('รหัสบัญชีหรือรายการประจำไม่ถูกต้อง');
+    result[key] = input[key];
+  }
+  if (input.type === 'transfer' && (!result.accountId || !result.toAccountId || result.accountId === result.toAccountId)) fail('เลือกบัญชีต้นทางและปลายทางคนละบัญชี');
+  if (input.type !== 'transfer' && result.toAccountId) fail('บัญชีปลายทางใช้เฉพาะการโอน');
+  if (input.occurrence !== undefined) {
+    if (!result.templateId || !validMonth(input.occurrence)) fail('รอบรายการประจำไม่ถูกต้อง');
+    result.occurrence = input.occurrence;
+  }
+  return result;
 }
 export function validateCommand(input) {
   if (!input || !ID_PATTERN.test(input.operationId || '')) fail('รหัสการบันทึกไม่ถูกต้อง');
   if (!Number.isSafeInteger(input.baseRevision) || input.baseRevision < 0) fail('เวอร์ชันข้อมูลไม่ถูกต้อง');
   const command = { operationId: input.operationId, baseRevision: input.baseRevision, action: input.action };
   if (input.action === 'upsert') command.transaction = validateTransaction(input.transaction);
-  else if (input.action === 'delete') {
+  else if (['delete', 'restore'].includes(input.action)) {
     if (!ID_PATTERN.test(input.id || '')) fail('รหัสรายการไม่ถูกต้อง');
     command.id = input.id;
   } else if (input.action === 'import') {
     if (!Array.isArray(input.transactions) || !input.transactions.length || input.transactions.length > 50) fail('นำเข้าได้ครั้งละ 1–50 รายการ');
     command.transactions = input.transactions.map(validateTransaction);
     if (new Set(command.transactions.map(t => t.id)).size !== command.transactions.length) fail('มีรหัสรายการซ้ำในไฟล์');
+  } else if (['settings', 'mergeSettings'].includes(input.action)) command.settings = validateSettings(input.settings);
+  else if (input.action === 'renameCategory') {
+    if (!['income', 'expense'].includes(input.type)) fail('ประเภทหมวดหมู่ไม่ถูกต้อง');
+    command.type = input.type; command.from = shortName(input.from); command.to = shortName(input.to);
+  } else if (input.action === 'importTrash') {
+    if (!Array.isArray(input.transactions) || !input.transactions.length || input.transactions.length > 50) fail('นำเข้าได้ครั้งละ 1–50 รายการ');
+    command.transactions = input.transactions.map(validateTransaction);
   } else fail('คำสั่งไม่ถูกต้อง');
   if (JSON.stringify(command).length > 45000) fail('ข้อมูลชุดนี้ใหญ่เกินไป');
   return command;
@@ -57,7 +75,7 @@ export function applyCommand(transactions, command) {
 }
 export function summarize(transactions) {
   let income = 0, expense = 0;
-  for (const t of transactions) { if (t.type === 'income') income += t.amount; else expense += t.amount; }
+  for (const t of transactions) { if (t.type === 'income') income += t.amount; else if (t.type === 'expense') expense += t.amount; }
   if (!Number.isSafeInteger(income) || !Number.isSafeInteger(expense)) fail('ยอดรวมมากเกินขอบเขตที่รองรับ');
   return { income, expense, balance: income - expense };
 }
@@ -69,7 +87,7 @@ export function filterTransactions(transactions, { month = '', type = '', catego
 }
 export function parseBackup(text) {
   let data; try { data = JSON.parse(text); } catch { fail('ไฟล์นี้ไม่ใช่ JSON ที่ถูกต้อง'); }
-  if (!['littlepay-ledger', 'baankhao-ledger'].includes(data?.format) || data.version !== 1 || !Array.isArray(data.transactions)) fail('รูปแบบไฟล์สำรองไม่รองรับ');
+  if (!['littlepay-ledger', 'baankhao-ledger'].includes(data?.format) || ![1, 2].includes(data.version) || !Array.isArray(data.transactions)) fail('รูปแบบไฟล์สำรองไม่รองรับ');
   if (data.transactions.length > 20000) fail('ไฟล์ต้องมีไม่เกิน 20,000 รายการ');
   const transactions = data.transactions.map(validateTransaction);
   if (new Set(transactions.map(t => t.id)).size !== transactions.length) fail('มีรหัสรายการซ้ำในไฟล์');
@@ -82,6 +100,115 @@ export function csvCell(value) {
   return '"' + text.replace(/"/g, '""') + '"';
 }
 export function toCSV(transactions) {
-  const rows = [['วันที่', 'ประเภท', 'หมวดหมู่', 'จำนวนเงิน (บาท)', 'หมายเหตุ'], ...transactions.map(t => [t.date, t.type === 'income' ? 'รายรับ' : 'รายจ่าย', t.category, (t.amount / 100).toFixed(2), t.note])];
+  const rows = [['วันที่', 'ประเภท', 'หมวดหมู่', 'จำนวนเงิน (บาท)', 'หมายเหตุ', 'บัญชีต้นทาง', 'บัญชีปลายทาง'], ...transactions.map(t => [t.date, {income:'รายรับ',expense:'รายจ่าย',transfer:'โอนเงิน'}[t.type], t.category, (t.amount / 100).toFixed(2), t.note, t.accountId || 'default-wallet', t.toAccountId || ''])];
   return '\uFEFF' + rows.map(row => row.map(csvCell).join(',')).join('\r\n');
+}
+
+export function validMonth(value) { return typeof value === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(value) && value >= '1900-01' && value <= '2199-12'; }
+export function shortName(value) { if (typeof value !== 'string' || !value.trim() || value.trim().length > 60) fail('ชื่อต้องมีความยาว 1–60 ตัวอักษร'); return value.trim(); }
+export function defaultSettings() {
+  return { accounts: [{ id: 'default-wallet', name: 'ยังไม่แยกบัญชี', opening: 0, archived: false }],
+    categories: Object.entries(CATEGORIES).flatMap(([type, names]) => names.map(name => ({type, name, hidden:false}))), budgets: [], templates: [] };
+}
+export function validateSettings(input) {
+  if (!input || !Array.isArray(input.accounts) || !Array.isArray(input.categories) || !Array.isArray(input.budgets) || !Array.isArray(input.templates)) fail('การตั้งค่าไม่ถูกต้อง');
+  if (input.accounts.length < 1 || input.accounts.length > 50 || input.categories.length > 100 || input.budgets.length > 300 || input.templates.length > 100) fail('จำนวนการตั้งค่าเกินขอบเขตที่รองรับ');
+  const accounts = input.accounts.map(a => {
+    if (!ID_PATTERN.test(a.id || '') || !Number.isSafeInteger(a.opening) || Math.abs(a.opening) > MAX_AMOUNT) fail('บัญชีหรือยอดตั้งต้นไม่ถูกต้อง');
+    return {id:a.id, name:shortName(a.name), opening:a.opening, archived:!!a.archived};
+  });
+  if (!accounts.some(a=>a.id === 'default-wallet') || new Set(accounts.map(a=>a.id)).size !== accounts.length) fail('ต้องมีบัญชีเริ่มต้นและรหัสบัญชีไม่ซ้ำ');
+  const categories = input.categories.map(c => { if (!['income','expense'].includes(c.type)) fail('ประเภทหมวดหมู่ไม่ถูกต้อง'); return {type:c.type,name:shortName(c.name),hidden:!!c.hidden}; });
+  if (new Set(categories.map(c=>c.type+'|'+c.name)).size !== categories.length) fail('ชื่อหมวดหมู่ซ้ำ');
+  const budgets = input.budgets.map(b => {
+    if (!validMonth(b.month) || !Number.isSafeInteger(b.amount) || b.amount <= 0 || b.amount > MAX_AMOUNT) fail('งบประมาณไม่ถูกต้อง');
+    return {month:b.month,category:b.category === '' ? '' : shortName(b.category),amount:b.amount};
+  });
+  if (new Set(budgets.map(b=>b.month+'|'+b.category)).size !== budgets.length) fail('งบประมาณซ้ำ');
+  const templates = input.templates.map(t => {
+    if (!ID_PATTERN.test(t.id || '') || !['favorite','recurring'].includes(t.kind)) fail('รายการต้นแบบไม่ถูกต้อง');
+    const transaction = validateTransaction(t.transaction);
+    if (!accounts.some(a=>a.id === (transaction.accountId || 'default-wallet')) || (transaction.toAccountId && !accounts.some(a=>a.id === transaction.toAccountId))) fail('ไม่พบบัญชีในรายการต้นแบบ');
+    const result = {id:t.id,name:shortName(t.name),kind:t.kind,transaction,enabled:t.enabled !== false};
+    if (t.kind === 'recurring') { if (!Number.isInteger(t.day) || t.day < 1 || t.day > 31 || !validMonth(t.startMonth)) fail('รอบรายการประจำไม่ถูกต้อง'); result.day=t.day; result.startMonth=t.startMonth; }
+    return result;
+  });
+  if (new Set(templates.map(t=>t.id)).size !== templates.length) fail('รหัสรายการต้นแบบซ้ำ');
+  const result = {accounts,categories,budgets,templates};
+  if (JSON.stringify(result).length > 35000) fail('การตั้งค่ามีขนาดใหญ่เกินไป กรุณาลบรายการต้นแบบหรืองบเก่าที่ไม่ใช้');
+  return result;
+}
+export function normalizeLedger(data = {}) {
+  return {transactions:(data.transactions || []).map(validateTransaction), settings:validateSettings(data.settings || defaultSettings()), trash:(data.trash || []).map(validateTransaction),history:data.history || [],revision:data.revision || 0};
+}
+export function ledgerContext(data = {}) {
+  const s = normalizeLedger(data);
+  return {...s, records:new Map(s.transactions.map(t=>[t.id,t])), deleted:new Map(s.trash.map(t=>[t.id,t]))};
+}
+export function ledgerResult(ctx) { return {transactions:[...ctx.records.values()],settings:ctx.settings,trash:[...ctx.deleted.values()],history:ctx.history,revision:ctx.revision}; }
+export function stepLedger(ctx, command, savedAt = '') {
+  const {records,deleted} = ctx; let before=null, after=null;
+  if (command.action === 'upsert') {
+    const t = command.transaction;
+    const account = id => ctx.settings.accounts.some(a=>a.id === id);
+    if (!account(t.accountId || 'default-wallet') || (t.toAccountId && !account(t.toAccountId))) fail('ไม่พบบัญชี กรุณารีเฟรช',409);
+    if (deleted.has(t.id)) fail('รายการอยู่ในถังขยะ กรุณากู้คืนก่อน',409);
+    if (t.templateId && t.occurrence && [...records.values(),...deleted.values()].some(x=>x.id!==t.id && x.templateId===t.templateId && x.occurrence===t.occurrence)) fail('รายการประจำรอบนี้บันทึกแล้ว',409);
+    before=records.get(t.id)||null; after=t; records.set(t.id,t);
+  } else if (command.action === 'delete') {
+    if (!records.has(command.id)) fail('ไม่พบรายการที่ต้องการลบ',409);
+    before=records.get(command.id); deleted.set(command.id,before); records.delete(command.id);
+  } else if (command.action === 'restore') {
+    if (!deleted.has(command.id) || records.has(command.id)) fail('ไม่พบรายการในถังขยะ',409);
+    after=deleted.get(command.id); records.set(command.id,after); deleted.delete(command.id);
+  } else if (command.action === 'import' || command.action === 'importTrash') {
+    for (const t of command.transactions) if (!records.has(t.id) && !deleted.has(t.id)) {
+      if (!ctx.settings.accounts.some(a=>a.id === (t.accountId || 'default-wallet')) || (t.toAccountId && !ctx.settings.accounts.some(a=>a.id === t.toAccountId))) fail('นำเข้าการตั้งค่าบัญชีก่อนรายการ',409);
+      (command.action === 'import' ? records : deleted).set(t.id,t);
+    }
+  } else if (command.action === 'settings') {
+    for (const a of ctx.settings.accounts) if (!command.settings.accounts.some(x=>x.id===a.id)) fail('ให้ซ่อนบัญชีแทนการลบ เพื่อรักษาประวัติ');
+    ctx.settings=command.settings;
+  } else if (command.action === 'mergeSettings') {
+    const merged={};
+    for (const [key,id] of [['accounts',x=>x.id],['categories',x=>x.type+'|'+x.name],['budgets',x=>x.month+'|'+x.category],['templates',x=>x.id]]) {
+      const existing=new Set(ctx.settings[key].map(id)); merged[key]=[...ctx.settings[key],...command.settings[key].filter(x=>!existing.has(id(x)))];
+    }
+    // A fresh book may adopt the default account's opening balance from the backup.
+    if (!records.size && !deleted.size && ctx.revision===0) merged.accounts=command.settings.accounts;
+    ctx.settings=validateSettings(merged);
+  } else if (command.action === 'renameCategory') {
+    const {type,from,to}=command;
+    if (ctx.settings.categories.some(c=>c.type===type && c.name===to && to!==from)) fail('มีหมวดหมู่นี้แล้ว');
+    for (const map of [records,deleted]) for (const [id,t] of map) if(t.type===type && t.category===from) map.set(id,{...t,category:to});
+    ctx.settings=validateSettings({...ctx.settings,
+      categories:ctx.settings.categories.some(c=>c.type===type&&c.name===from) ? ctx.settings.categories.map(c=>c.type===type && c.name===from ? {...c,name:to}:c) : [...ctx.settings.categories,{type,name:to,hidden:false}],
+      budgets:ctx.settings.budgets.map(b=>type==='expense' && b.category===from ? {...b,category:to}:b),
+      templates:ctx.settings.templates.map(t=>t.transaction.type===type && t.transaction.category===from ? {...t,transaction:{...t.transaction,category:to}}:t)});
+  }
+  ctx.revision++;
+  ctx.history=[{operationId:command.operationId,action:command.action,savedAt,before,after,detail:command.action==='renameCategory' ? command.from+' → '+command.to : ''},...ctx.history].slice(0,100);
+}
+export function applyLedger(data,command,savedAt='') { const ctx=ledgerContext(data); stepLedger(ctx,command,savedAt); const result=ledgerResult(ctx); summarize(result.transactions); accountBalances(result); return result; }
+export function accountBalances(data) {
+  const balances=new Map(data.settings.accounts.map(a=>[a.id,a.opening]));
+  for (const t of data.transactions) {
+    const id=t.accountId||'default-wallet';
+    if (!balances.has(id) || (t.type==='transfer' && !balances.has(t.toAccountId))) fail('พบบัญชีที่ไม่มีการตั้งค่า');
+    balances.set(id,balances.get(id)+(t.type==='income'?t.amount:-t.amount));
+    if(t.type==='transfer') balances.set(t.toAccountId,balances.get(t.toAccountId)+t.amount);
+  }
+  if ([...balances.values()].some(v=>!Number.isSafeInteger(v))) fail('ยอดบัญชีเกินขอบเขต');
+  return balances;
+}
+export function recurrenceDate(template,month) {
+  if (!validMonth(month) || template.kind!=='recurring' || month<template.startMonth) return null;
+  const [y,m]=month.split('-').map(Number), day=Math.min(template.day,new Date(Date.UTC(y,m,0)).getUTCDate());
+  return month+'-'+String(day).padStart(2,'0');
+}
+export function parseFullBackup(text) {
+  const transactions=parseBackup(text), data=JSON.parse(text);
+  const state=normalizeLedger({transactions,settings:data.version===2?data.settings:defaultSettings(),trash:data.version===2?data.trash:[]});
+  if(state.trash.length>20000 || new Set([...transactions,...state.trash].map(t=>t.id)).size!==transactions.length+state.trash.length) fail('รหัสรายการในไฟล์สำรองซ้ำ');
+  accountBalances(state); return state;
 }

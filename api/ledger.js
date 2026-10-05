@@ -25,6 +25,7 @@ export function createHandler({ env = process.env, verify = (token, audience) =>
       if (typeof body === 'string') { try { body = JSON.parse(body); } catch { return send(400, { error: 'ข้อมูล JSON ไม่ถูกต้อง' }); } }
       if (JSON.stringify(body || {}).length > 60000) return send(413, { error: 'ข้อมูลใหญ่เกินไป' });
       const command = body?.action === 'read' ? { action: 'read' } : validateCommand(body);
+      if (command.action !== 'read' && body.clientVersion !== 2) return send(409, { error: 'มี LittlePay รุ่นใหม่ กรุณารีโหลดหน้าเว็บก่อนบันทึก เพื่อรักษาข้อมูลบัญชีและหมวดหมู่' });
       if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(env.APPS_SCRIPT_URL)) return send(503, { error: 'ตั้งค่า Apps Script URL ไม่ถูกต้อง' });
       const response = await request(env.APPS_SCRIPT_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -34,7 +35,7 @@ export function createHandler({ env = process.env, verify = (token, audience) =>
       let result;
       try { result = await response.json(); } catch { return send(502, { error: 'Apps Script ตอบกลับไม่ถูกต้อง ตรวจสอบสิทธิ์ Anyone และ deployment /exec' }); }
       if (!result.ok) return send([400, 409, 429].includes(result.status) ? result.status : 502, { error: result.error || 'เชื่อมต่อ Google Sheets ไม่สำเร็จ' });
-      return send(200, { transactions: result.transactions, revision: result.revision });
+      return send(200, { transactions: result.transactions, revision: result.revision, ...(result.settings ? { settings: result.settings, trash: result.trash, history: result.history } : {}) });
     } catch (error) {
       if (error.status === 400) return send(400, { error: error.message });
       return send(502, { error: 'ยังยืนยันผลการบันทึกไม่ได้ ตรวจสอบเครือข่ายแล้วกดลองใหม่ด้วยรายการเดิม' });

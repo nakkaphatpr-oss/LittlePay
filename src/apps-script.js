@@ -28,39 +28,31 @@ function doPost(e) {
     const values = sheet.getDataRange().getValues();
     if (values[0].join('|') !== 'operation_id|saved_at_utc|action|payload_json') throw new Error('Invalid ledger header');
     const state = readEvents(values.slice(1));
-    if (command.action === 'read') return jsonResponse({ ok: true, transactions: state.transactions, revision: state.revision });
+    if (command.action === 'read') return jsonResponse({ ok: true, ...ledgerResult(state) });
     // Durable idempotency: an uncertain network result can safely retry the exact command.
     if (state.operations[command.operationId]) {
       if (state.operations[command.operationId] !== JSON.stringify(command)) fail('รหัสคำสั่งถูกใช้กับข้อมูลอื่นแล้ว', 409);
-      return jsonResponse({ ok: true, transactions: state.transactions, revision: state.revision });
+      return jsonResponse({ ok: true, ...ledgerResult(state) });
     }
     if (command.baseRevision !== state.revision) fail('ข้อมูลมีการเปลี่ยนแปลงจากอีกหน้าต่าง กรุณารีเฟรชก่อนแก้ไขใหม่', 409);
-    const transactions = applyCommand(state.transactions, command);
-    summarize(transactions);
+    const next = applyLedger(ledgerResult(state), command, new Date().toISOString());
     // One append is the commit. JSON begins with { so user text cannot become a Sheet formula.
     sheet.appendRow([command.operationId, new Date().toISOString(), command.action, JSON.stringify(command)]);
     SpreadsheetApp.flush();
-    return jsonResponse({ ok: true, transactions, revision: state.revision + 1 });
+    return jsonResponse({ ok: true, ...next });
   } catch (error) {
     return jsonResponse({ ok: false, status: error.status || 500, error: error.status ? error.message : 'อ่านหรือบันทึก Google Sheets ไม่สำเร็จ ตรวจสอบการตั้งค่าและโควตา' });
   } finally { if (lock && lock.hasLock()) lock.releaseLock(); }
 }
 function readEvents(rows) {
-  const records = new Map();
+  const ctx = ledgerContext();
   const operations = Object.create(null);
-  rows.forEach((row, index) => {
-    const command = validateCommand(JSON.parse(row[3]));
-    if (row[0] !== command.operationId || operations[command.operationId] || command.baseRevision !== index || row[2] !== command.action) throw new Error('Corrupted ledger event');
-    // Replay in linear time instead of copying every prior transaction for every event.
-    if (command.action === 'upsert') records.set(command.transaction.id, command.transaction);
-    else if (command.action === 'delete') {
-      if (!records.has(command.id)) throw new Error('Invalid delete event');
-      records.delete(command.id);
-    } else for (const transaction of command.transactions) {
-      if (!records.has(transaction.id)) records.set(transaction.id, transaction);
-    }
-    operations[command.operationId] = JSON.stringify(command);
+  rows.forEach((row,index) => {
+    const command=validateCommand(JSON.parse(row[3]));
+    if(row[0]!==command.operationId || operations[command.operationId] || command.baseRevision!==index || row[2]!==command.action) throw new Error('Corrupted ledger event');
+    stepLedger(ctx,command,String(row[1]));
+    operations[command.operationId]=JSON.stringify(command);
   });
-  return { transactions: Array.from(records.values()), operations, revision: rows.length };
+  return {...ctx,operations};
 }
 function jsonResponse(value) { return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON); }

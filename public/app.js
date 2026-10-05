@@ -1,17 +1,19 @@
-import { CATEGORIES, moneyToSatang, validateTransaction, validateCommand, applyCommand, summarize, filterTransactions, parseBackup, toCSV } from './core.js';
+import { installFeatures } from './features.js';
+import { normalizeLedger, defaultSettings, applyLedger, parseFullBackup, CATEGORIES, moneyToSatang, validateTransaction, validateCommand, applyCommand, summarize, filterTransactions, parseBackup, toCSV } from './core.js';
 
 const $ = selector => document.querySelector(selector);
 const money = value => new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB' }).format(value / 100);
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 // Preserve the original storage namespace so a rename never discards existing demo data.
 const DEMO_KEY = 'baankhao-demo-v1';
-let state = { transactions: [], revision: 0 }, mode = null, token = null, config, busy = false, pending = null, editing = null, page = 1, view = 'overview', toastTimer;
-let googleReady;
-const viewLabels = { overview: ['ภาพรวมการเงิน', 'รู้ที่มา เห็นที่ไป วางแผนเดือนถัดไปได้ดีขึ้น'], transactions: ['รายการทั้งหมด', 'ทุกรายรับ ทุกรายจ่าย อยู่ในที่เดียว'], reports: ['สรุปตามหมวดหมู่', 'มองเห็นรูปแบบการใช้เงินของคุณ'], settings: ['ข้อมูลและการตั้งค่า', 'จัดการสมุดบัญชีและเก็บข้อมูลไว้กับคุณ'] };
+let state = normalizeLedger(), mode = null, token = null, config, busy = false, pending = null, editing = null, page = 1, view = 'overview', toastTimer;
+let googleReady, templateDraft = null;
+const features = installFeatures({getState:()=>({...state,cloud:mode==='cloud'}),getMonth:()=>$('#month').value,today,money,mutate,toast,confirmAction,openTemplate,download});
+const viewLabels = { planning: ['วางแผนและบัญชี', 'จัดการเงินแต่ละกระเป๋า งบประมาณ และรายการที่ใช้บ่อย'], overview: ['ภาพรวมการเงิน', 'รู้ที่มา เห็นที่ไป วางแผนเดือนถัดไปได้ดีขึ้น'], transactions: ['รายการทั้งหมด', 'ทุกรายรับ ทุกรายจ่าย อยู่ในที่เดียว'], reports: ['สรุปตามหมวดหมู่', 'มองเห็นรูปแบบการใช้เงินของคุณ'], settings: ['ข้อมูลและการตั้งค่า', 'จัดการสมุดบัญชีและเก็บข้อมูลไว้กับคุณ'] };
 $('#month').value = today().slice(0, 7);
 function el(tag, text, className) { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; }
 function toast(message, error = false) { clearTimeout(toastTimer); $('#toast').textContent = message; $('#toast').className = 'toast' + (error ? ' error' : ''); $('#toast').hidden = false; toastTimer = setTimeout(() => { $('#toast').hidden = true; }, error ? 10000 : 4500); }
-function setBusy(value) { busy = value; for (const id of ['add', 'refresh', 'save', 'retry', 'import-json', 'logout', 'connect-real', 'demo-start']) $('#' + id).disabled = value; document.querySelectorAll('[data-edit],[data-delete]').forEach(button => { button.disabled = value; }); $('#save').textContent = value ? 'กำลังบันทึก…' : 'บันทึกรายการ'; }
+function setBusy(value) { busy = value; if(value)$('#sync-time').textContent='กำลังติดต่อ…'; for (const id of ['add', 'refresh', 'save', 'retry', 'import-json', 'logout', 'connect-real', 'demo-start']) $('#' + id).disabled = value; document.querySelectorAll('[data-edit],[data-delete],[data-template]').forEach(button => { button.disabled = value; }); $('#save').textContent = value ? 'กำลังบันทึก…' : 'บันทึกรายการ'; }
 function confirmAction(title, message) { return new Promise(resolve => {
   $('#confirm-title').textContent = title; $('#confirm-message').textContent = message;
   const dialog = $('#confirmation');
@@ -32,20 +34,20 @@ function demoSeed() {
 }
 async function api(command) {
   let response;
-  try { response = await fetch('/api/ledger', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify(command), signal: AbortSignal.timeout(55000) }); }
+  try { response = await fetch('/api/ledger', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({...command,clientVersion:2}), signal: AbortSignal.timeout(55000) }); }
   catch { throw new Error('เครือข่ายขัดข้อง ยังยืนยันผลการบันทึกไม่ได้ กรุณาลองใหม่'); }
   let body; try { body = await response.json(); } catch { throw new Error('เซิร์ฟเวอร์ตอบกลับไม่สมบูรณ์ กรุณาลองใหม่'); }
   if (!response.ok) { const error = new Error(body.error || 'เชื่อมต่อไม่สำเร็จ'); error.status = response.status; throw error; }
   if (!Array.isArray(body.transactions) || !Number.isSafeInteger(body.revision)) throw new Error('รูปแบบข้อมูลจากเซิร์ฟเวอร์ไม่ถูกต้อง');
-  return { transactions: body.transactions.map(validateTransaction), revision: body.revision };
+  return normalizeLedger(body);
 }
 function showWorkspace() { $('#welcome').hidden = true; $('#workspace').hidden = false; $('#demo-banner').hidden = mode !== 'demo'; $('#connection-label').textContent = mode === 'demo' ? 'ข้อมูลทดลอง · ในเครื่อง' : 'เชื่อมต่อ Google Sheets'; render(); }
-function synced() { $('#sync-time').textContent = 'อัปเดต ' + new Intl.DateTimeFormat('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' }).format(new Date()); }
+function synced() { $('#sync-time').textContent = 'บันทึก/โหลดสำเร็จ ' + new Intl.DateTimeFormat('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' }).format(new Date()); }
 async function refresh() {
   if (busy) return;
   setBusy(true);
   try {
-    if (mode === 'demo') { const stored = localStorage.getItem(DEMO_KEY); if (stored) { const data = JSON.parse(stored); state = { transactions: data.transactions.map(validateTransaction), revision: data.revision }; } }
+    if (mode === 'demo') { const stored = localStorage.getItem(DEMO_KEY); if (stored) { const data = JSON.parse(stored); state = normalizeLedger(data); } }
     else state = await api({ action: 'read' });
     pending = null; $('#pending-banner').hidden = true; synced(); render(); toast('อัปเดตข้อมูลแล้ว');
   } catch (error) { toast(error.message, true); if (error.status === 401) await returnToLogin(); }
@@ -57,7 +59,7 @@ async function transmit(command) {
   const stored = localStorage.getItem(DEMO_KEY);
   const latest = stored ? JSON.parse(stored) : state;
   if (latest.revision !== command.baseRevision) { const error = new Error('ข้อมูลทดลองเปลี่ยนจากอีกหน้าต่าง กรุณารีเฟรช'); error.status = 409; throw error; }
-  const next = { transactions: applyCommand(latest.transactions, command), revision: latest.revision + 1 };
+  const next = applyLedger(normalizeLedger(latest), command, new Date().toISOString());
   localStorage.setItem(DEMO_KEY, JSON.stringify(next));
   return next;
 }
@@ -70,13 +72,14 @@ async function mutate(data, retry = false) {
     state = await transmit(command); pending = null; $('#pending-banner').hidden = true; synced(); render(); return true;
   } catch (error) {
     if ([400, 401, 403, 409, 413, 415, 503].includes(error.status) || mode === 'demo') pending = null;
+    $('#sync-time').textContent = pending ? 'ยังยืนยันการบันทึกไม่ได้' : 'บันทึกไม่สำเร็จ';
     $('#pending-banner').hidden = !pending; $('#form-error').textContent = error.message; toast(error.message, true);
     if (error.status === 401) { $('#editor').close(); await returnToLogin(); }
     return false;
   } finally { setBusy(false); }
 }
 async function returnToLogin() {
-  token = null; state = { transactions: [], revision: 0 }; mode = null;
+  token = null; state = normalizeLedger(); mode = null;
   $('#workspace').hidden = true; $('#welcome').hidden = false; $('#connection-label').textContent = 'กรุณาเข้าสู่ระบบ';
   await initGoogle();
 }
@@ -91,12 +94,12 @@ function renderList(container, records) {
   records.forEach(t => {
     const row = el('tr'), cell = el('td'), label = el('div', undefined, 'transaction-label'), text = el('div');
     const formattedDate = new Intl.DateTimeFormat('th-TH', { day: 'numeric', month: 'short', year: '2-digit' }).format(new Date(t.date + 'T12:00:00+07:00'));
-    text.append(el('b', t.note || t.category), el('small', formattedDate + ' · ' + (t.type === 'income' ? 'รายรับ' : 'รายจ่าย')));
+    text.append(el('b', t.note || t.category), el('small', formattedDate + ' · ' + ({income:'รายรับ',expense:'รายจ่าย',transfer:'โอนเงิน'}[t.type])));
     label.append(el('span', t.type === 'income' ? '↙' : '↗', 'symbol ' + (t.type === 'income' ? 'income-bg' : 'expense-bg')), text); cell.append(label);
     const category = el('td', undefined, 'category-column'); category.append(el('span', t.category, 'pill'));
     const actions = el('td', undefined, 'row-actions');
-    for (const [action, title] of [['edit', 'แก้ไข'], ['delete', 'ลบ']]) { const button = el('button', title); button.dataset[action] = t.id; button.setAttribute('aria-label', title + ' ' + (t.note || t.category)); button.disabled = busy; actions.append(button); }
-    row.append(cell, category, el('td', formattedDate, 'date-column muted'), el('td', (t.type === 'income' ? '+' : '−') + money(t.amount), 'numeric money-' + t.type), actions); tbody.append(row);
+    for (const [action, title] of [['edit', 'แก้ไข'], ['delete', 'ลบ'], ['template', 'ใช้ซ้ำ / ตั้งประจำ']]) { const button = el('button', title); button.dataset[action] = t.id; button.setAttribute('aria-label', title + ' ' + (t.note || t.category)); button.disabled = busy; actions.append(button); }
+    row.append(cell, category, el('td', formattedDate, 'date-column muted'), el('td', (t.type === 'income' ? '+' : t.type === 'transfer' ? '⇄ ' : '−') + money(t.amount), 'numeric money-' + t.type), actions); tbody.append(row);
   }); table.append(tbody); wrapper.append(table); container.append(wrapper);
 }
 function renderCategories(container, records, limit = Infinity) {
@@ -137,8 +140,8 @@ function render() {
   renderList($('#recent-list'), monthRecords.slice(0, 5));
   const selected = $('#category-filter').value, categories = [...new Set(state.transactions.map(t => t.category))].sort();
   $('#category-filter').replaceChildren(new Option('ทุกหมวดหมู่', ''), ...categories.map(c => new Option(c, c))); $('#category-filter').value = categories.includes(selected) ? selected : '';
-  renderFullList();
-  $('#category-tags').replaceChildren(...[...new Set([...CATEGORIES.expense, ...CATEGORIES.income, ...categories])].map(c => el('span', c)));
+  renderFullList(); features.render();
+  $('#category-tags').replaceChildren(...state.settings.categories.filter(c=>!c.hidden).map(c=>el('span',c.name)));
   $('#storage-details').textContent = mode === 'demo' ? `กำลังใช้ข้อมูลทดลอง ${state.transactions.length} รายการ ข้อมูลอยู่ในเบราว์เซอร์นี้และอาจหายเมื่อล้างข้อมูลเว็บไซต์ สามารถสำรอง JSON แล้วย้ายไปบัญชีจริงได้` : `เชื่อม Google Sheets แล้ว · ${state.transactions.length} รายการ · เวอร์ชันข้อมูล ${state.revision} ข้อมูลจริงไม่ถูกบันทึกลงพื้นที่จัดเก็บของเบราว์เซอร์ หากเปิดหลายหน้าต่าง ให้รีเฟรชก่อนแก้ไข`;
 }
 function renderFullList() {
@@ -154,16 +157,31 @@ function setView(next) {
 }
 function fillCategories(selected = '') {
   const type = new FormData($('#transaction-form')).get('type');
-  const options = [...new Set([...CATEGORIES[type], ...state.transactions.filter(t => t.type === type).map(t => t.category)])];
+  const transfer=type==='transfer'; $('#category-label').hidden=transfer; $('#category').required=!transfer;
+  $('#to-account-label').hidden=!transfer; $('#to-account').required=transfer; $('#to-account').disabled=!transfer;
+  const hidden=new Set(state.settings.categories.filter(c=>c.type===type&&c.hidden).map(c=>c.name));
+  const options = [...new Set([...state.settings.categories.filter(c=>c.type===type&&!c.hidden).map(c=>c.name), ...state.transactions.filter(t=>t.type===type&&!hidden.has(t.category)).map(t=>t.category),...(selected?[selected]:[])])];
   const placeholder = new Option('เลือกหมวดหมู่', ''); placeholder.disabled = true;
-  $('#category').replaceChildren(placeholder, ...options.map(c => new Option(c, c)));
-  $('#category').value = options.includes(selected) ? selected : '';
+  $('#category').replaceChildren(placeholder,...options.map(c=>new Option(c,c))); $('#category').value=selected;
+}
+function fillAccounts(transaction) {
+  for(const [id,key] of [['account','accountId'],['to-account','toAccountId']]) {
+    const selected=transaction?.[key] || (id==='account'?'default-wallet':'');
+    const options=state.settings.accounts.filter(a=>!a.archived||a.id===selected);
+    $('#'+id).replaceChildren(new Option('เลือกบัญชี',''),...options.map(a=>new Option(a.name,a.id)));$('#'+id).value=selected;
+  }
 }
 function openEditor(id = null) {
   if (busy) return; if (pending) return toast('กรุณาลองบันทึกคำสั่งเดิมหรือรีเฟรชก่อน', true);
-  editing = id; const form = $('#transaction-form'); form.reset(); $('#form-error').textContent = ''; $('#editor-title').textContent = id ? 'แก้ไขรายการ' : 'เพิ่มรายการ';
-  if (id) { const t = state.transactions.find(t => t.id === id); if (!t) return; form.elements.type.value = t.type; $('#amount').value = (t.amount / 100).toFixed(2); $('#date').value = t.date; $('#category').value = t.category; $('#note').value = t.note; }
-  else $('#date').value = today(); fillCategories(id ? state.transactions.find(t => t.id === id).category : ''); $('#editor').showModal(); $('#amount').focus();
+  editing=id; templateDraft=null; const form=$('#transaction-form');form.reset();$('#form-error').textContent='';$('#editor-title').textContent=id?'แก้ไขรายการ':'เพิ่มรายการ';
+  const t=id?state.transactions.find(t=>t.id===id):null;if(id&&!t)return;
+  if(t){form.elements.type.value=t.type;$('#amount').value=(t.amount/100).toFixed(2);$('#date').value=t.date;$('#note').value=t.note;}
+  else $('#date').value=today();fillCategories(t?.category||'');fillAccounts(t);$('#editor').showModal();$('#amount').focus();
+}
+function openTemplate(template,date) {
+  openEditor();if(!$('#editor').open)return;const t=template.transaction;
+  $('#transaction-form').elements.type.value=t.type;$('#amount').value=(t.amount/100).toFixed(2);$('#date').value=date;$('#note').value=t.note;
+  fillCategories(t.category);fillAccounts(t);templateDraft=template.kind==='recurring'?{templateId:template.id,occurrence:date.slice(0,7)}:null;
 }
 function download(content, filename, type) { const url = URL.createObjectURL(new Blob([content], { type })), link = el('a'); link.href = url; link.download = filename; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 async function initGoogle() {
@@ -181,7 +199,7 @@ async function initGoogle() {
   } catch (error) { googleReady = null; $('#setup-message').textContent = error.message; }
 }
 $('#demo-start').onclick = () => {
-  try { const stored = localStorage.getItem(DEMO_KEY); if (stored) { const data = JSON.parse(stored); state = { transactions: data.transactions.map(validateTransaction), revision: data.revision }; } else { state = { transactions: demoSeed(), revision: 0 }; localStorage.setItem(DEMO_KEY, JSON.stringify(state)); } mode = 'demo'; pending = null; $('#pending-banner').hidden = true; synced(); showWorkspace(); }
+  try { const stored = localStorage.getItem(DEMO_KEY); if (stored) { const data = JSON.parse(stored); state = normalizeLedger(data); } else { state = normalizeLedger({transactions:demoSeed()}); localStorage.setItem(DEMO_KEY, JSON.stringify(state)); } mode = 'demo'; pending = null; $('#pending-banner').hidden = true; synced(); showWorkspace(); }
   catch { toast('เปิดข้อมูลทดลองไม่ได้ พื้นที่จัดเก็บของเบราว์เซอร์อาจถูกปิดหรือข้อมูลเสียหาย', true); }
 };
 $('#connect-real').onclick = () => returnToLogin();
@@ -195,7 +213,7 @@ $('#editor').addEventListener('cancel', event => { if (busy) event.preventDefaul
 document.querySelectorAll('input[name="type"]').forEach(input => input.addEventListener('change', () => { $('#category').value = ''; fillCategories(); }));
 $('#transaction-form').onsubmit = async event => {
   event.preventDefault(); $('#form-error').textContent = '';
-  try { const form = new FormData(event.currentTarget); const transaction = validateTransaction({ id: editing || crypto.randomUUID(), type: form.get('type'), amount: moneyToSatang(form.get('amount')), date: form.get('date'), category: form.get('category'), note: form.get('note') });
+  try { const form = new FormData(event.currentTarget); const transaction = validateTransaction({ id: editing || crypto.randomUUID(), type: form.get('type'), amount: moneyToSatang(form.get('amount')), date: form.get('date'), category: form.get('type')==='transfer'?'โอนเงิน':form.get('category'), note: form.get('note'),accountId:form.get('accountId'),...(form.get('type')==='transfer'?{toAccountId:form.get('toAccountId')}:{}),...(editing ? Object.fromEntries(Object.entries(state.transactions.find(t=>t.id===editing)).filter(([k])=>['templateId','occurrence'].includes(k))) : templateDraft||{}) });
     if (await mutate({ action: 'upsert', transaction })) { $('#editor').close(); toast('บันทึกรายการเรียบร้อยแล้ว'); }
     else if (pending) $('#editor').close();
   } catch (error) { $('#form-error').textContent = error.message; }
@@ -203,31 +221,36 @@ $('#transaction-form').onsubmit = async event => {
 document.addEventListener('click', async event => {
   const edit = event.target.closest('[data-edit]'), remove = event.target.closest('[data-delete]');
   if (edit) openEditor(edit.dataset.edit);
-  if (remove && !busy) { const t = state.transactions.find(t => t.id === remove.dataset.delete); const detail = mode === 'demo' ? 'รายการทดลองนี้จะถูกนำออกจากเบราว์เซอร์' : 'รายการจะถูกลบจากยอดสรุป แต่ยังมีประวัติใน Google Sheets'; if (t && await confirmAction('ลบรายการนี้?', `${t.note || t.category} · ${money(t.amount)}\n${detail}`)) { if (await mutate({ action: 'delete', id: t.id })) toast('ลบรายการแล้ว'); } }
+  if (remove && !busy) { const t = state.transactions.find(t => t.id === remove.dataset.delete); const detail = mode === 'demo' ? 'ย้ายไปถังขยะ สามารถกู้คืนได้' : 'ย้ายไปถังขยะ ยอดสรุปจะปรับตาม และยังมีประวัติใน Google Sheets'; if (t && await confirmAction('ลบรายการนี้?', `${t.note || t.category} · ${money(t.amount)}\n${detail}`)) { if (await mutate({ action: 'delete', id: t.id })) toast('ลบรายการแล้ว'); } }
 });
 $('#month').onchange = () => { if (!/^\d{4}-\d{2}$/.test($('#month').value) || !$('#month').validity.valid) $('#month').value = today().slice(0, 7); page = 1; render(); };
 for (const [id, direction] of [['prev-month', -1], ['next-month', 1]]) $('#' + id).onclick = () => { const date = new Date($('#month').value + '-15T12:00:00Z'); date.setUTCMonth(date.getUTCMonth() + direction); const next = date.toISOString().slice(0, 7); if (next >= '1900-01' && next <= '2199-12') { $('#month').value = next; page = 1; render(); } };
 for (const id of ['search', 'type-filter', 'category-filter']) $('#' + id).addEventListener('input', () => { page = 1; renderFullList(); });
 $('#clear-filters').onclick = () => { for (const id of ['search', 'type-filter', 'category-filter']) $('#' + id).value = ''; page = 1; renderFullList(); };
 $('#prev-page').onclick = () => { page--; renderFullList(); }; $('#next-page').onclick = () => { page++; renderFullList(); };
-$('#export-json').onclick = () => { download(JSON.stringify({ format: 'littlepay-ledger', version: 1, exportedAt: new Date().toISOString(), transactions: state.transactions }, null, 2), `littlepay-backup-${today()}.json`, 'application/json'); toast('สร้างไฟล์สำรองแล้ว'); };
+$('#export-json').onclick = () => {
+  download(JSON.stringify({format:'littlepay-ledger',version:2,exportedAt:new Date().toISOString(),transactions:state.transactions,settings:state.settings,trash:state.trash,history:state.history},null,2),`littlepay-backup-${today()}.json`,'application/json');
+  try{localStorage.setItem('littlepay-last-backup-'+(mode==='cloud'?'cloud':'demo'),String(Date.now()));}catch{} features.render();toast('สร้างไฟล์สำรองแล้ว กรุณาตรวจไฟล์ในโฟลเดอร์ดาวน์โหลด');
+};
 $('#export-csv').onclick = () => download(toCSV(filterTransactions(state.transactions, filters())), `littlepay-${$('#month').value}.csv`, 'text/csv;charset=utf-8');
 $('#import-json').onclick = () => { if (!pending) $('#import-file').click(); else toast('กรุณาจัดการคำสั่งที่ค้างอยู่ก่อน', true); };
 $('#import-file').onchange = async event => {
   const file = event.target.files[0]; event.target.value = ''; if (!file) return;
   try {
     if (file.size > 15000000) throw new Error('ไฟล์ต้องไม่เกิน 15 MB');
-    const transactions = parseBackup(await file.text()), ids = new Set(state.transactions.map(t => t.id));
+    const backup = parseFullBackup(await file.text()), transactions=backup.transactions, ids = new Set([...state.transactions,...state.trash].map(t => t.id));
     const additions = transactions.filter(t => !ids.has(t.id));
-    if (!additions.length) return toast('ไม่มีรายการใหม่ในไฟล์นี้');
     if (!await confirmAction('นำเข้าข้อมูล?', `เพิ่ม ${additions.length} รายการ ข้ามรหัสที่มีอยู่แล้ว ${transactions.length - additions.length} รายการ\nไม่เขียนทับรายการเดิม แนะนำให้สำรองข้อมูลก่อนดำเนินการ`)) return;
+    if(!await mutate({action:'mergeSettings',settings:backup.settings}))return;
     let imported = 0;
     for (let i = 0; i < additions.length; i += 50) {
       const chunk = additions.slice(i, i + 50);
       if (!await mutate({ action: 'import', transactions: chunk })) { $('#import-status').textContent = `ยืนยันแล้ว ${imported} รายการ หยุดนำเข้า กรุณาจัดการคำสั่งที่ค้างแล้วนำเข้าไฟล์เดิมอีกครั้ง ระบบจะข้ามรายการที่มีแล้ว`; return; }
       imported += chunk.length; $('#import-status').textContent = `นำเข้าแล้ว ${imported} / ${additions.length} รายการ`;
     }
-    toast('นำเข้าข้อมูลเรียบร้อยแล้ว');
+    const trash=backup.trash.filter(t=>!ids.has(t.id));
+    for(let i=0;i<trash.length;i+=50)if(!await mutate({action:'importTrash',transactions:trash.slice(i,i+50)}))return;
+    toast('นำเข้ารายการ การตั้งค่า และถังขยะแล้ว ประวัติเดิมยังอ่านได้ในไฟล์สำรอง');
   } catch (error) { toast(error.message, true); }
 };
 window.addEventListener('beforeunload', event => { if (busy || pending) { event.preventDefault(); event.returnValue = ''; } });

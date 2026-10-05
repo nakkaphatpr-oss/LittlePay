@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
+import {defaultSettings} from '../public/core.js';
 const source = readFileSync(new URL('../public/core.js', import.meta.url), 'utf8').replace(/^export /gm, '') + '\n' + readFileSync(new URL('../src/apps-script.js', import.meta.url), 'utf8');
 function fixture() {
   const rows = [['operation_id', 'saved_at_utc', 'action', 'payload_json']]; let locked = false, released = 0;
@@ -39,4 +40,14 @@ test('import is a single atomic event, duplicate IDs do not replace existing tra
   const f = fixture(); f.request(command);
   const result = f.request({ action: 'import', operationId: 'operation-002', baseRevision: 1, transactions: [{ ...transaction, amount: 1000 }, { ...transaction, id: 'transaction-002', amount: 600 }] });
   assert.equal(result.transactions.length, 2); assert.equal(result.transactions[0].amount, 2500); assert.equal(result.revision, 2);
+});
+test('v2 settings, transfer and trash survive Apps Script replay and retries',()=>{
+  const f=fixture(),settings=defaultSettings();settings.accounts.push({id:'account-bank',name:'Bank',opening:10000,archived:false});
+  const config={action:'settings',operationId:'settings-001',baseRevision:0,settings};
+  assert.equal(f.request(config).settings.accounts.length,2);assert.equal(f.request(config).revision,1);
+  const transfer={...transaction,type:'transfer',category:'โอนเงิน',accountId:'account-bank',toAccountId:'default-wallet'};
+  assert.equal(f.request({...command,baseRevision:1,transaction:transfer}).transactions[0].toAccountId,'default-wallet');
+  assert.equal(f.request({action:'delete',id:transfer.id,baseRevision:2,operationId:'delete-001'}).trash.length,1);
+  const read=f.request({action:'read'});assert.equal(read.revision,3);assert.equal(read.settings.accounts.length,2);assert.equal(read.history[0].before.type,'transfer');
+  assert.equal(f.request({action:'restore',id:transfer.id,baseRevision:3,operationId:'restore-001'}).transactions.length,1);
 });

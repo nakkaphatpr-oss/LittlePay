@@ -152,12 +152,18 @@ function setView(next) {
   document.querySelectorAll('.nav-item').forEach(button => { button.classList.toggle('active', button.dataset.view === next); button.setAttribute('aria-current', button.dataset.view === next ? 'page' : 'false'); });
   $('#view-title').textContent = viewLabels[next][0]; $('#view-subtitle').textContent = viewLabels[next][1]; $('#page-label').textContent = next === 'overview' ? 'ภาพรวม' : viewLabels[next][0]; $('#month-toolbar').hidden = next === 'settings';
 }
-function fillCategories() { const type = new FormData($('#transaction-form')).get('type'); const options = [...new Set([...CATEGORIES[type], ...state.transactions.filter(t => t.type === type).map(t => t.category)])]; $('#categories').replaceChildren(...options.map(c => new Option(c, c))); }
+function fillCategories(selected = '') {
+  const type = new FormData($('#transaction-form')).get('type');
+  const options = [...new Set([...CATEGORIES[type], ...state.transactions.filter(t => t.type === type).map(t => t.category)])];
+  const placeholder = new Option('เลือกหมวดหมู่', ''); placeholder.disabled = true;
+  $('#category').replaceChildren(placeholder, ...options.map(c => new Option(c, c)));
+  $('#category').value = options.includes(selected) ? selected : '';
+}
 function openEditor(id = null) {
   if (busy) return; if (pending) return toast('กรุณาลองบันทึกคำสั่งเดิมหรือรีเฟรชก่อน', true);
   editing = id; const form = $('#transaction-form'); form.reset(); $('#form-error').textContent = ''; $('#editor-title').textContent = id ? 'แก้ไขรายการ' : 'เพิ่มรายการ';
   if (id) { const t = state.transactions.find(t => t.id === id); if (!t) return; form.elements.type.value = t.type; $('#amount').value = (t.amount / 100).toFixed(2); $('#date').value = t.date; $('#category').value = t.category; $('#note').value = t.note; }
-  else $('#date').value = today(); fillCategories(); $('#editor').showModal(); $('#amount').focus();
+  else $('#date').value = today(); fillCategories(id ? state.transactions.find(t => t.id === id).category : ''); $('#editor').showModal(); $('#amount').focus();
 }
 function download(content, filename, type) { const url = URL.createObjectURL(new Blob([content], { type })), link = el('a'); link.href = url; link.download = filename; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 async function initGoogle() {

@@ -48,7 +48,7 @@ async function drainQueue(){
           if(canRebase(entry,state,error)){
             command=queuedCommand({...entry,command:null},state.revision);await queueLock(()=>book().update(entry.transaction.id,{command}));
             try{state=await api(command);}catch(second){await queueLock(()=>book().update(entry.transaction.id,{error:second.message,rejected:commandWasRejected(second)}));throw second;}
-          }else{await queueLock(()=>book().update(entry.transaction.id,{error:'ข้อมูลขัดแย้ง กรุณาตรวจรายการในสมุดก่อน ลบคิวนี้ได้โดยไม่ลบข้อมูลบน Google',rejected:true}));throw error;}
+          }else{await queueLock(()=>book().update(entry.transaction.id,{error:'ข้อมูลขัดแย้ง กรุณาตรวจรายการในสมุดก่อน ลบคิวนี้ได้โดยไม่ลบข้อมูลบนเซิร์ฟเวอร์',rejected:true}));throw error;}
         }else{await queueLock(()=>book().update(entry.transaction.id,{error:error.message,rejected:commandWasRejected(error)}));throw error;}
       }
       await queueLock(()=>book().remove(entry.transaction.id));cacheState();synced();render();
@@ -67,10 +67,10 @@ function toast(message, error = false) { clearTimeout(toastTimer); $('#toast').t
 function setBusy(value) {
   busy = value; clearTimeout(slowTimer);
   if (value) {
-    $('#sync-time').textContent = pending ? 'กำลังบันทึกไป Google Sheets…' : 'กำลังโหลดข้อมูล…';
+    $('#sync-time').textContent = pending ? 'กำลังบันทึกไป ฐานข้อมูล…' : 'กำลังโหลดข้อมูล…';
     $('#form-status').textContent = pending ? 'กำลังบันทึก กรุณารอผลยืนยัน ไม่ต้องกดซ้ำ' : '';
     slowTimer = setTimeout(() => {
-      const message = pending ? 'Google ตอบช้ากว่าปกติ กำลังรอผลและลองคำสั่งเดิมอย่างปลอดภัย…' : 'Google ตอบช้ากว่าปกติ กำลังรอข้อมูล…';
+      const message = pending ? 'เซิร์ฟเวอร์ตอบช้ากว่าปกติ กำลังรอผลและลองคำสั่งเดิมอย่างปลอดภัย…' : 'เซิร์ฟเวอร์ตอบช้ากว่าปกติ กำลังรอข้อมูล…';
       $('#sync-time').textContent = message; $('#form-status').textContent = message;
     }, 7000);
   } else $('#form-status').textContent = '';
@@ -106,7 +106,7 @@ async function api(command) {
   if (!Array.isArray(body.transactions) || !Number.isSafeInteger(body.revision)) throw new Error('รูปแบบข้อมูลจากเซิร์ฟเวอร์ไม่ถูกต้อง');
   return normalizeLedger(body);
 }
-function showWorkspace() { $('#open-offline').hidden=true;$('#welcome').hidden = true; $('#workspace').hidden = false; $('#demo-banner').hidden = mode !== 'demo'; $('#connection-label').textContent = mode === 'demo' ? 'ข้อมูลทดลอง · ในเครื่อง' : token?'เชื่อมต่อ Google Sheets':'สำเนาในเครื่อง · รอเชื่อมต่อเพื่อซิงค์'; cacheState();render(); }
+function showWorkspace() { $('#open-offline').hidden=true;$('#welcome').hidden = true; $('#workspace').hidden = false; $('#demo-banner').hidden = mode !== 'demo'; $('#connection-label').textContent = mode === 'demo' ? 'ข้อมูลทดลอง · ในเครื่อง' : token?'เชื่อมต่อ ฐานข้อมูล':'สำเนาในเครื่อง · รอเชื่อมต่อเพื่อซิงค์'; cacheState();render(); }
 function synced() { $('#sync-time').textContent = 'บันทึก/โหลดสำเร็จ ' + new Intl.DateTimeFormat('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' }).format(new Date()); }
 async function refresh() {
   if (busy||syncing) return;
@@ -288,16 +288,17 @@ async function connectPrivate() {
   $('#setup-message').textContent='กำลังเปิดสมุดส่วนตัว กรุณารอสักครู่…';
   $('#private-status').textContent='กำลังตรวจลิงก์และเปิดสมุด…';
   $('#open-private').textContent='กำลังเปิดสมุด…';
+  // Only an already remembered device may immediately open its cached book.
+  if(validAccessKey(stored)&&key===stored){try{const cached=localBook(localStorage,'cloud').cache();if(cached){state=normalizeLedger(cached);mode='cloud';showWorkspace();$('#sync-time').textContent='สำเนาล่าสุดในเครื่อง · กำลังอัปเดตข้อมูล…';}}catch{}}
   try {
-    if(!config?.configured){const response=await fetch('/api/ledger',{signal:AbortSignal.timeout(15000)});if(!response.ok)throw new Error('ติดต่อเซิร์ฟเวอร์ไม่ได้ กรุณาลองอีกครั้ง');config=await response.json();if(!config.configured)throw new Error('ระบบยังไม่พร้อม กรุณาลองอีกครั้ง');}
     state=await api({action:'read'});mode='cloud';
     try{localStorage.setItem(ACCESS_STORAGE_KEY,key);linkKey=null;}catch{toast('เปิดสมุดแล้ว แต่เบราว์เซอร์ไม่อนุญาตให้จำสิทธิ์ กรุณาเก็บลิงก์ส่วนตัวไว้',true);}
     $('#private-access').close();$('#private-link').value='';
     $('#pending-banner').hidden=!pending;synced();showWorkspace();
   }catch(error){
     token=null;$('#setup-message').textContent=error.message;$('#private-status').textContent=error.message;
-    if(error.status===401){linkKey=null;if(!$('#private-access').open)$('#private-access').showModal();}
-    if(error.status!==401){try{const cached=book().cache();if(cached){state=normalizeLedger(cached);mode='cloud';token=key;showWorkspace();$('#sync-time').textContent='สำเนาในเครื่อง — รอเชื่อมต่อ Google Sheets';}}catch{}}
+    if(error.status===401){linkKey=null;mode=null;$('#workspace').hidden=true;$('#welcome').hidden=false;if(!$('#private-access').open)$('#private-access').showModal();}
+    if(error.status!==401){try{const cached=book().cache();if(cached){state=normalizeLedger(cached);mode='cloud';token=key;showWorkspace();$('#sync-time').textContent='สำเนาในเครื่อง — รอเชื่อมต่อ ฐานข้อมูล';}}catch{}}
   }finally{setBusy(false);$('#open-private').textContent='เปิดสมุดส่วนตัว';if(mode==='cloud'&&token){$('#private-access').close();void drainQueue();}}
 }
 $('#demo-start').onclick = () => {
@@ -322,14 +323,14 @@ $('#transaction-form').onsubmit = async event => {
   try { const form = new FormData(event.currentTarget); const transaction = validateTransaction({ id: editing || crypto.randomUUID(), type: form.get('type'), amount: moneyToSatang(form.get('amount')), date: form.get('date'), category: form.get('type')==='transfer'?'โอนเงิน':form.get('category'), note: form.get('note'),accountId:form.get('accountId'),...(form.get('type')==='transfer'?{toAccountId:form.get('toAccountId')}:{}),...(editing ? Object.fromEntries(Object.entries(state.transactions.find(t=>t.id===editing)||{}).filter(([k])=>['templateId','occurrence'].includes(k))) : templateDraft||{}) });
     if(editing&&JSON.stringify(state.transactions.find(t=>t.id===editing))!==editBaseline)throw new Error('รายการเดิมเปลี่ยนไปแล้ว กรุณาทิ้งร่างนี้แล้วเปิดรายการล่าสุดเพื่อแก้ไข');
     if(mode==='cloud'&&!editing){
-      await queueLock(()=>book().enqueue(transaction));clearDraft();$('#editor').close();localStatus();toast('เก็บในคิวแล้ว — ยอดจะอัปเดตเมื่อยืนยันจาก Google Sheets');void drainQueue();
+      await queueLock(()=>book().enqueue(transaction));clearDraft();$('#editor').close();localStatus();toast('เก็บในคิวแล้ว — ยอดจะอัปเดตเมื่อยืนยันจาก ฐานข้อมูล');void drainQueue();
     } else if (await mutate({ action: 'upsert', transaction })) { clearDraft();$('#editor').close(); toast('บันทึกรายการเรียบร้อยแล้ว'); }
   } catch (error) { $('#form-error').textContent = error.message; }finally{submitting=false;}
 };
 document.addEventListener('click', async event => {
   const edit = event.target.closest('[data-edit]'), remove = event.target.closest('[data-delete]');
   if (edit) openEditor(edit.dataset.edit);
-  if (remove && !busy) { const t = state.transactions.find(t => t.id === remove.dataset.delete); const detail = mode === 'demo' ? 'ย้ายไปถังขยะ สามารถกู้คืนได้' : 'ย้ายไปถังขยะ ยอดสรุปจะปรับตาม และยังมีประวัติใน Google Sheets'; if (t && await confirmAction('ลบรายการนี้?', `${t.note || t.category} · ${money(t.amount)}\n${detail}`)) { if (await mutate({ action: 'delete', id: t.id })) toast('ลบรายการแล้ว'); } }
+  if (remove && !busy) { const t = state.transactions.find(t => t.id === remove.dataset.delete); const detail = mode === 'demo' ? 'ย้ายไปถังขยะ สามารถกู้คืนได้' : 'ย้ายไปถังขยะ ยอดสรุปจะปรับตาม และยังมีประวัติใน ฐานข้อมูล'; if (t && await confirmAction('ลบรายการนี้?', `${t.note || t.category} · ${money(t.amount)}\n${detail}`)) { if (await mutate({ action: 'delete', id: t.id })) toast('ลบรายการแล้ว'); } }
 });
 $('#month').onchange = () => { if (!/^\d{4}-\d{2}$/.test($('#month').value) || !$('#month').validity.valid) $('#month').value = today().slice(0, 7); page = 1; render(); };
 for (const [id, direction] of [['prev-month', -1], ['next-month', 1]]) $('#' + id).onclick = () => { const date = new Date($('#month').value + '-15T12:00:00Z'); date.setUTCMonth(date.getUTCMonth() + direction); const next = date.toISOString().slice(0, 7); if (next >= '1900-01' && next <= '2199-12') { $('#month').value = next; page = 1; render(); } };
@@ -395,16 +396,19 @@ window.addEventListener('hashchange',()=>{
   }catch(error){toast(error.message,true);}
 });
 $('#export-queue').onclick=()=>{try{download(JSON.stringify({format:'littlepay-local-work',version:1,queue:book().queue(),draft:book().draft()},null,2),'littlepay-unsent-'+today()+'.json','application/json');}catch(error){toast(error.message,true);}};
-$('#open-offline').onclick=()=>{try{const cached=localBook(localStorage,'cloud').cache();if(!cached)return;state=normalizeLedger(cached);mode='cloud';try{const saved=localStorage.getItem(ACCESS_STORAGE_KEY);token=linkKey||(validAccessKey(saved)?saved:null);}catch{token=linkKey;}showWorkspace();$('#sync-time').textContent='สำเนาล่าสุดในเครื่อง — ยังไม่ได้ตรวจข้อมูลบน Google';}catch(error){toast(error.message,true);}};
+$('#open-offline').onclick=()=>{try{const cached=localBook(localStorage,'cloud').cache();if(!cached)return;state=normalizeLedger(cached);mode='cloud';try{const saved=localStorage.getItem(ACCESS_STORAGE_KEY);token=linkKey||(validAccessKey(saved)?saved:null);}catch{token=linkKey;}showWorkspace();$('#sync-time').textContent='สำเนาล่าสุดในเครื่อง — ยังไม่ได้ตรวจข้อมูลบนเซิร์ฟเวอร์';}catch(error){toast(error.message,true);}};
 try{$('#open-offline').hidden=!localBook(localStorage,'cloud').cache();}catch{}
 window.addEventListener('online',()=>{localStatus();void drainQueue();});
 window.addEventListener('offline',localStatus);
 window.addEventListener('storage',()=>{if(mode)localStatus();});
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 window.addEventListener('storage', event => { if (mode === 'demo' && event.key === DEMO_KEY) toast('ข้อมูลทดลองเปลี่ยนจากอีกหน้าต่าง กรุณารีเฟรชก่อนแก้ไข'); });
-try {
+let rememberedKey=null;try{rememberedKey=localStorage.getItem(ACCESS_STORAGE_KEY);}catch{}
+if(linkKey||validAccessKey(rememberedKey))await connectPrivate();
+else try {
   const response = await fetch('/api/ledger', { signal: AbortSignal.timeout(15000) });
   if (!response.ok) throw new Error(); config = await response.json();
-  $('#setup-message').textContent = config.configured ? 'กำลังเปิดสมุดส่วนตัว…' : 'ยังไม่ได้เชื่อม Google Sheets — ลองหน้าจอได้ก่อน แล้วตั้งค่าตามคู่มือ README';
+  $('#setup-message').textContent = config.configured ? 'กำลังเปิดสมุดส่วนตัว…' : 'ยังไม่ได้เชื่อม ฐานข้อมูล — ลองหน้าจอได้ก่อน แล้วตั้งค่าตามคู่มือ README';
   await connectPrivate();
 } catch { $('#setup-message').textContent = 'ยังติดต่อเซิร์ฟเวอร์ไม่ได้ สามารถเปิดสำเนาที่เก็บในเครื่องได้'; }
+

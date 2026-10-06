@@ -15,6 +15,17 @@ test('configuration endpoint never exposes secret, owner email or Apps Script UR
   assert.deepEqual(result.body, { configured: true, accessMode: 'private-link' }); assert.equal(result.headers['Cache-Control'], 'no-store');
 });
 test('incomplete configuration fails closed', async () => { assert.equal((await invoke(createHandler({ env: {} }))).status, 503); });
+test('Firestore still requires private access and maintenance blocks writes before storage',async()=>{
+ let calls=0;
+ const firebaseEnv={...env,LEDGER_BACKEND:'firestore',FIREBASE_PROJECT_ID:'test',FIREBASE_SERVICE_ACCOUNT_JSON:'{}'};
+ const handler=createHandler({env:firebaseEnv,firestore:async()=>{calls++;return {transactions:[],revision:0};}});
+ assert.equal((await invoke(handler,{token:''})).status,401);assert.equal(calls,0);
+ assert.equal((await invoke(handler)).status,200);assert.equal(calls,1);
+ const frozen=createHandler({env:{...firebaseEnv,LEDGER_READ_ONLY:'true'},firestore:async()=>{throw Error('must not write');}});
+ const write={action:'delete',id:'record12345',operationId:'operation12345',baseRevision:0,clientVersion:3};
+ assert.equal((await invoke(frozen,{body:write})).status,503);
+ assert.equal((await invoke(frozen,{method:'GET'})).body.readOnly,true);
+});
 test('missing, malformed and wrong keys cannot touch Sheets', async () => {
   let calls=0; const handler=createHandler({env,request:async()=>{calls++;throw new Error();}});
   for(const token of ['', 'invalid', 'c'.repeat(64), accessKey.toUpperCase()]) assert.equal((await invoke(handler,{token})).status,401);

@@ -13,5 +13,7 @@
     "test": "node --test",
     "check": "node --check public/app.js && node --check api/ledger.js && node --check src/apps-script.js"
   },
-  "dependencies": {}
+  "dependencies": {
+    "firebase-admin": "^14.5.0"
+  }
 }

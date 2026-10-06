@@ -1,18 +1,19 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { validateCommand } from '../public/core.js';
 import { callSheets } from '../src/sheets-transport.js';
+import { getFirestoreLedger } from '../src/firestore-ledger.js';
 
 export function configuration(env = process.env) {
-  return Boolean(/^[a-f0-9]{64}$/.test(env.ACCESS_KEY_HASH || '') && env.APPS_SCRIPT_URL && env.SHEETS_API_SECRET?.length >= 32);
+  return Boolean(/^[a-f0-9]{64}$/.test(env.ACCESS_KEY_HASH || '') && (env.LEDGER_BACKEND==='firestore' ? env.FIREBASE_PROJECT_ID && env.FIREBASE_SERVICE_ACCOUNT_JSON : env.APPS_SCRIPT_URL && env.SHEETS_API_SECRET?.length >= 32));
 }
-export function createHandler({ env = process.env, request = fetch, pause, log } = {}) {
+export function createHandler({ env = process.env, request = fetch, pause, log, firestore } = {}) {
   const inflight = new Map();
   return async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     const send = (status, body) => res.status(status).json(body);
     try {
-      if (req.method === 'GET') return send(200, { configured: configuration(env), accessMode: 'private-link' });
+      if (req.method === 'GET') return send(200, { configured: configuration(env), accessMode: 'private-link',...(env.LEDGER_READ_ONLY==='true'?{readOnly:true}:{}) });
       if (req.method !== 'POST') { res.setHeader('Allow', 'GET, POST'); return send(405, { error: 'ไม่รองรับวิธีเรียกนี้' }); }
       if (!configuration(env)) return send(503, { error: 'ยังไม่ได้ตั้งค่าการเชื่อมต่อ Google Sheets กรุณาดูคู่มือติดตั้ง' });
       if (!String(req.headers['content-type'] || '').startsWith('application/json')) return send(415, { error: 'ต้องส่งข้อมูลแบบ JSON' });
@@ -23,6 +24,14 @@ export function createHandler({ env = process.env, request = fetch, pause, log }
       if (JSON.stringify(body || {}).length > 60000) return send(413, { error: 'ข้อมูลใหญ่เกินไป' });
       const command = body?.action === 'read' ? { action: 'read' } : validateCommand(body);
       if (command.action !== 'read' && body.clientVersion !== 3) return send(409, { error: 'มี LittlePay รุ่นใหม่ กรุณารีโหลดหน้าเว็บก่อนบันทึก เพื่อรักษาข้อมูลบัญชี หมวดหมู่ และเป้าหมายเงินออม' });
+      if(command.action!=='read'&&env.LEDGER_READ_ONLY==='true')return send(503,{error:'กำลังย้ายฐานข้อมูล กรุณารอสักครู่ ร่างและคิวของคุณยังอยู่',retryable:true,outcomeUnknown:true});
+      if(env.LEDGER_BACKEND==='firestore'){
+        const started=Date.now();
+        const run=firestore||await getFirestoreLedger(env);
+        const result=await run(command);
+        res.setHeader('Server-Timing',`firestore;dur=${Date.now()-started}`);
+        return send(200,result);
+      }
       if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(env.APPS_SCRIPT_URL)) return send(503, { error: 'ตั้งค่า Apps Script URL ไม่ถูกต้อง' });
       const key = JSON.stringify(command);
       // Coalesce simultaneous identical requests in this warm instance; never cache stale ledger data.
@@ -36,7 +45,7 @@ export function createHandler({ env = process.env, request = fetch, pause, log }
       if (failure) { if (failure.retryable) res.setHeader('Retry-After', '3'); return send(failure.status, failure); }
       return send(200, { transactions: result.transactions, revision: result.revision, ...(result.settings ? { settings: result.settings, trash: result.trash, history: result.history } : {}) });
     } catch (error) {
-      if (error.status === 400) return send(400, { error: error.message });
+      if ([400,409,503].includes(error.status)) return send(error.status, { error: error.message });
       return send(502, { error: 'ยังยืนยันผลการบันทึกไม่ได้ ตรวจสอบเครือข่ายแล้วกดลองใหม่ด้วยรายการเดิม' });
     }
   };

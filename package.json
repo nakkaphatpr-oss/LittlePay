@@ -4,12 +4,14 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.25.0",
-  "engines": { "node": "24.x" },
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "node --env-file-if-exists=.env.local scripts/dev.mjs",
     "build": "node scripts/build.mjs",
     "test": "node --test",
     "check": "node --check public/app.js && node --check api/ledger.js && node --check src/apps-script.js"
   },
-  "dependencies": { "google-auth-library": "^10.0.0" }
+  "dependencies": {}
 }

@@ -1,4 +1,4 @@
-import {ACCESS_STORAGE_KEY,validAccessKey,takePrivateLink} from './access.js';
+import {ACCESS_STORAGE_KEY,validAccessKey,takePrivateLink,parsePrivateInput} from './access.js';
 import { installFeatures } from './features.js';
 import { pendingStore, commandWasRejected } from './pending.js';
 import { localBook, queuedCommand, canRebase } from './local.js';
@@ -74,7 +74,7 @@ function setBusy(value) {
       $('#sync-time').textContent = message; $('#form-status').textContent = message;
     }, 7000);
   } else $('#form-status').textContent = '';
-  for (const id of ['add', 'refresh', 'save', 'retry', 'import-json', 'logout', 'connect-real', 'demo-start']) $('#' + id).disabled = value;
+  for (const id of ['add', 'refresh', 'save', 'retry', 'import-json', 'logout', 'connect-real', 'demo-start', 'open-private', 'private-submit']) $('#' + id).disabled = value;
   document.querySelectorAll('[data-edit],[data-delete],[data-template]').forEach(button => { button.disabled = value; });
   $('#transaction-form').querySelectorAll('input,select,textarea').forEach(input => { input.disabled = value || Boolean(pending); });
   $('#save').textContent = value ? 'กำลังบันทึก…' : pending ? 'ลองบันทึกคำสั่งเดิม' : 'บันทึกรายการ';
@@ -280,19 +280,25 @@ function openTemplate(template,date) {
 }
 function download(content, filename, type) { const url = URL.createObjectURL(new Blob([content], { type })), link = el('a'); link.href = url; link.download = filename; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 async function connectPrivate() {
-  if (!config?.configured || busy || syncing) return;
+  if (busy || syncing) return;
   let stored=null;try{stored=localStorage.getItem(ACCESS_STORAGE_KEY);}catch{}
   const key=linkKey||(validAccessKey(stored)?stored:null);
   if(!key){$('#setup-message').textContent='เปิดลิงก์ส่วนตัวครั้งแรกบนเครื่องนี้ แล้วครั้งถัดไปเข้าใช้งานได้ทันที';return;}
   setBusy(true);token=key;
+  $('#setup-message').textContent='กำลังเปิดสมุดส่วนตัว กรุณารอสักครู่…';
+  $('#private-status').textContent='กำลังตรวจลิงก์และเปิดสมุด…';
+  $('#open-private').textContent='กำลังเปิดสมุด…';
   try {
+    if(!config?.configured){const response=await fetch('/api/ledger',{signal:AbortSignal.timeout(15000)});if(!response.ok)throw new Error('ติดต่อเซิร์ฟเวอร์ไม่ได้ กรุณาลองอีกครั้ง');config=await response.json();if(!config.configured)throw new Error('ระบบยังไม่พร้อม กรุณาลองอีกครั้ง');}
     state=await api({action:'read'});mode='cloud';
     try{localStorage.setItem(ACCESS_STORAGE_KEY,key);linkKey=null;}catch{toast('เปิดสมุดแล้ว แต่เบราว์เซอร์ไม่อนุญาตให้จำสิทธิ์ กรุณาเก็บลิงก์ส่วนตัวไว้',true);}
+    $('#private-access').close();$('#private-link').value='';
     $('#pending-banner').hidden=!pending;synced();showWorkspace();
   }catch(error){
-    token=null;$('#setup-message').textContent=error.message;
+    token=null;$('#setup-message').textContent=error.message;$('#private-status').textContent=error.message;
+    if(error.status===401){linkKey=null;if(!$('#private-access').open)$('#private-access').showModal();}
     if(error.status!==401){try{const cached=book().cache();if(cached){state=normalizeLedger(cached);mode='cloud';token=key;showWorkspace();$('#sync-time').textContent='สำเนาในเครื่อง — รอเชื่อมต่อ Google Sheets';}}catch{}}
-  }finally{setBusy(false);if(mode==='cloud'&&token)void drainQueue();}
+  }finally{setBusy(false);$('#open-private').textContent='เปิดสมุดส่วนตัว';if(mode==='cloud'&&token){$('#private-access').close();void drainQueue();}}
 }
 $('#demo-start').onclick = () => {
   if (pending) return toast('มีคำสั่งของบัญชีจริงรอยืนยัน เปิดลิงก์ส่วนตัวแล้วตรวจผลคำสั่งเดิมก่อน', true);
@@ -368,7 +374,17 @@ for(const [id,rename] of [['add-category-inline',false],['rename-category-inline
 };
 $('#sync-queue').onclick=()=>void drainQueue();
 $('#queue-login').onclick=()=>returnToWelcome();
-$('#open-private').onclick=()=>connectPrivate();
+$('#open-private').onclick=()=>{
+  let stored=null;try{stored=localStorage.getItem(ACCESS_STORAGE_KEY);}catch{}
+  if(linkKey||validAccessKey(stored))return connectPrivate();
+  $('#private-status').textContent='';$('#private-access').showModal();
+};
+$('#private-cancel').onclick=()=>$('#private-access').close();
+$('#private-form').onsubmit=event=>{
+  event.preventDefault();if(busy||syncing)return;
+  try{linkKey=parsePrivateInput($('#private-link').value,location.origin);void connectPrivate();}
+  catch(error){$('#private-status').textContent=error.message;}
+};
 window.addEventListener('hashchange',()=>{
   try {
     const key=takePrivateLink(location.href,url=>history.replaceState(null,'',url));

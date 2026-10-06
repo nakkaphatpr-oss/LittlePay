@@ -1,5 +1,15 @@
 export const ACCESS_STORAGE_KEY = 'littlepay-private-access-v1';
 export const validAccessKey = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+export function parsePrivateInput(value, origin) {
+  const text=String(value||'').trim();
+  if(validAccessKey(text))return text;
+  try {
+    const url=new URL(text);
+    const key=new URLSearchParams(url.hash.slice(1)).get('access');
+    if(url.origin===origin&&validAccessKey(key))return key;
+  }catch{}
+  throw new Error('กรุณาวางลิงก์ส่วนตัวฉบับเต็มที่ได้รับในแชต ไม่ใช่แค่ littlepay.vercel.app');
+}
 export function takePrivateLink(url, replaceURL) {
   const address=new URL(url), fragment=new URLSearchParams(address.hash.slice(1));
   if(!fragment.has('access'))return null;

@@ -11,6 +11,8 @@ assert.equal(credentials.project_id,'littlepay-b16d6');
 const {key}=JSON.parse(fs.readFileSync('test-results/private-access.json'));
 const url='https://littlepay.vercel.app/api/ledger';
 const config=await fetch(url).then(r=>r.json());assert.equal(config.readOnly,true);
+console.log('Read-only confirmed; allowing prior requests to finish.');
+await new Promise(resolve=>setTimeout(resolve,65000));
 async function readSource(){const response=await fetch(url,{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+key},body:JSON.stringify({action:'read'}),signal:AbortSignal.timeout(60000)});assert.equal(response.status,200);return normalizeLedger(await response.json());}
 const source=await readSource();
 fs.mkdirSync('test-results',{recursive:true});fs.writeFileSync('test-results/pre-firestore-backup.json',JSON.stringify(source,null,2));

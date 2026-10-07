@@ -94,6 +94,16 @@ export function installFeatures({getState,getMonth,today,money,mutate,toast,conf
       const meter=node('meter');meter.min=0;meter.max=b.amount;meter.value=Math.min(spent,b.amount);meter.setAttribute('aria-label','ใช้ไป '+Math.round(spent/b.amount*100)+'%');r.append(meter);
     }
     const quick=panel(planning,'รายการโปรดและรายการประจำ','กด “ใช้ซ้ำ / ตั้งประจำ” จากรายการที่เคยบันทึก เพื่อสร้างต้นแบบ ไม่บันทึกอัตโนมัติ');
+    const activeTemplates=cfg.templates.filter(t=>t.enabled);
+    const templateTotals={expense:0,income:0,transfer:0};
+    for(const t of activeTemplates)templateTotals[t.transaction.type]+=t.transaction.amount;
+    const summary=node('div',undefined,'template-summary');
+    summary.setAttribute('aria-label','ยอดรวมรายการต้นแบบที่เปิดใช้');
+    for(const [type,label] of [['expense','รายจ่ายรวม'],['income','รายรับรวม'],['transfer','ยอดโอนรวม']]) {
+      const card=node('div',undefined,'template-total');
+      card.append(node('span',label),node('strong',money(templateTotals[type])));summary.append(card);
+    }
+    quick.append(summary,node('p',`รวมต้นแบบที่เปิดใช้ ${activeTemplates.length} รายการ · ไม่รวมรายการพักใช้ · เป็นยอดต้นแบบ ไม่ใช่ยอดที่บันทึกจริงหรือยอดค้างชำระ`,'muted'));
     for(const t of cfg.templates) {
       const date=t.kind==='recurring'?recurrenceDate(t,month):today();
       const exists=t.kind==='recurring'&&[...s.transactions,...s.trash].some(x=>x.templateId===t.id&&x.occurrence===month);
